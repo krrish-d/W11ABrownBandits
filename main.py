@@ -1,10 +1,18 @@
 from fastapi import FastAPI
+from app.routers import invoice
+from app.database import Base, engine
+
+# Create database tables automatically on startup
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="E-Invoice API",
-    description="API ecosystem for creating, validating, transforming and sending UBL invoices",
+    description="API ecosystem for creating, validating, transforming and sending UBL 2.1 XML invoices",
     version="1.0.0"
 )
+
+# Connect routers
+app.include_router(invoice.router)
 
 @app.get("/health")
 def health_check():
