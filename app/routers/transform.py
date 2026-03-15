@@ -55,3 +55,24 @@ def transform_invoice(request: TransformRequest):
         )
     else:
         return {"status": "success", "converted_invoice": result}
+
+@router.get("/formats")
+def get_supported_formats():
+    """
+    Returns the list of supported input and output formats for invoice transformation.
+    """
+    return {
+        "input_formats": ["json", "csv", "ubl_xml"],
+        "output_formats": ["json", "csv", "ubl_xml", "pdf"],
+        "supported_conversions": [
+            "json → ubl_xml",
+            "json → csv",
+            "json → pdf",
+            "csv → ubl_xml",
+            "csv → json",
+            "csv → pdf",
+            "ubl_xml → json",
+            "ubl_xml → csv",
+            "ubl_xml → pdf"
+        ]
+    }

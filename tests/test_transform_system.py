@@ -237,3 +237,12 @@ def test_health_check():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "healthy"
+
+def test_endpoint_get_formats():
+    response = client.get("/transform/formats")
+    assert response.status_code == 200
+    data = response.json()
+    assert "input_formats" in data
+    assert "output_formats" in data
+    assert "json" in data["input_formats"]
+    assert "pdf" in data["output_formats"]
