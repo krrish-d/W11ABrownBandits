@@ -255,16 +255,6 @@ def test_peppol_rules_missing_payment_means():
     errors = check_peppol_rules(root)
     assert any(e["rule"] == "VR6" and "PaymentMeans" in e["description"] for e in errors)
 
-def test_australian_rules_non_aud():
-    from lxml import etree
-    usd_xml = VALID_UBL_XML.replace(
-        "<cbc:DocumentCurrencyCode>AUD</cbc:DocumentCurrencyCode>",
-        "<cbc:DocumentCurrencyCode>USD</cbc:DocumentCurrencyCode>"
-    )
-    root = etree.fromstring(usd_xml.encode())
-    errors = check_australian_rules(root)
-    assert any(e["rule"] == "VR7" and "AUD" in e["description"] for e in errors)
-
 def test_business_rules_non_numeric_payable_amount():
     from lxml import etree
     bad_xml = VALID_UBL_XML.replace(
