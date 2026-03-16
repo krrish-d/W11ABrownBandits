@@ -240,3 +240,47 @@ def test_validate_returns_valid_true_for_clean_invoice():
 def test_validate_wrong_totals_fails():
     result = validate(WRONG_TOTALS_XML, "ubl")
     assert result["valid"] is False
+
+# edge cases for coverage
+def test_business_rules_non_numeric_line_item():
+    from lxml import etree
+    bad_xml = VALID_UBL_XML.replace("<cbc:InvoicedQuantity unitCode=\"EA\">2</cbc:InvoicedQuantity>", "<cbc:InvoicedQuantity unitCode=\"EA\">abc</cbc:InvoicedQuantity>")
+    root = etree.fromstring(bad_xml.encode())
+    errors = check_business_rules(root)
+    assert any(e["rule"] == "VR4" for e in errors)
+
+def test_peppol_rules_missing_payment_means():
+    from lxml import etree
+    root = etree.fromstring(VALID_UBL_XML.encode())
+    errors = check_peppol_rules(root)
+    assert any(e["rule"] == "VR6" and "PaymentMeans" in e["description"] for e in errors)
+
+def test_australian_rules_non_aud():
+    from lxml import etree
+    usd_xml = VALID_UBL_XML.replace(
+        "<cbc:DocumentCurrencyCode>AUD</cbc:DocumentCurrencyCode>",
+        "<cbc:DocumentCurrencyCode>USD</cbc:DocumentCurrencyCode>"
+    )
+    root = etree.fromstring(usd_xml.encode())
+    errors = check_australian_rules(root)
+    assert any(e["rule"] == "VR7" and "AUD" in e["description"] for e in errors)
+
+def test_business_rules_non_numeric_payable_amount():
+    from lxml import etree
+    bad_xml = VALID_UBL_XML.replace(
+        "<cbc:PayableAmount currencyID=\"AUD\">110.0</cbc:PayableAmount>",
+        "<cbc:PayableAmount currencyID=\"AUD\">abc</cbc:PayableAmount>"
+    )
+    root = etree.fromstring(bad_xml.encode())
+    errors = check_business_rules(root)
+    assert any(e["rule"] == "VR4" and "not a valid number" in e["description"] for e in errors)
+
+def test_business_rules_non_numeric_line_extension():
+    from lxml import etree
+    bad_xml = VALID_UBL_XML.replace(
+        "<cbc:LineExtensionAmount currencyID=\"AUD\">100.0</cbc:LineExtensionAmount>",
+        "<cbc:LineExtensionAmount currencyID=\"AUD\">abc</cbc:LineExtensionAmount>"
+    )
+    root = etree.fromstring(bad_xml.encode())
+    errors = check_business_rules(root)
+    assert any(e["rule"] == "VR4" for e in errors)
