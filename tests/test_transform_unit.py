@@ -1,12 +1,11 @@
 import pytest
+import base64
 from app.services.transform import (
     parse_json,
     parse_csv,
     parse_ubl_xml,
+    parse_generic_xml,
     dict_to_ubl_xml,
-    dict_to_json,
-    dict_to_csv,
-    dict_to_pdf,
     transform,
 )
 
@@ -77,6 +76,100 @@ SAMPLE_UBL_XML = """<?xml version='1.0' encoding='UTF-8'?>
   </cac:InvoiceLine>
 </Invoice>"""
 
+SAMPLE_GENERIC_XML = """<?xml version='1.0' encoding='UTF-8'?>
+<Invoice>
+  <InvoiceID>abc-123</InvoiceID>
+  <InvoiceNumber>INV-001</InvoiceNumber>
+  <Status>draft</Status>
+  <ClientName>XYZ Pty Ltd</ClientName>
+  <ClientEmail>xyz@example.com</ClientEmail>
+  <Currency>AUD</Currency>
+  <DueDate>2026-03-16</DueDate>
+  <Subtotal>100.0</Subtotal>
+  <TaxTotal>10.0</TaxTotal>
+  <GrandTotal>110.0</GrandTotal>
+  <LineItems>
+    <LineItem>
+      <Description>Consulting</Description>
+      <Quantity>2</Quantity>
+      <UnitPrice>50.0</UnitPrice>
+      <TaxRate>10.0</TaxRate>
+      <LineTotal>100.0</LineTotal>
+    </LineItem>
+  </LineItems>
+</Invoice>"""
+
+
+def make_sample_pdf() -> bytes:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    import io
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    elements = []
+
+    elements.append(Paragraph("INVOICE", styles["Title"]))
+    elements.append(Spacer(1, 5 * mm))
+
+    details = [
+        ["Invoice Number:", "INV-001"],
+        ["Invoice ID:", "abc-123"],
+        ["Client Name:", "XYZ Pty Ltd"],
+        ["Client Email:", "xyz@example.com"],
+        ["Currency:", "AUD"],
+        ["Due Date:", "2026-03-16"],
+        ["Status:", "draft"],
+    ]
+    detail_table = Table(details, colWidths=[50 * mm, 120 * mm])
+    detail_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(detail_table)
+    elements.append(Spacer(1, 8 * mm))
+
+    elements.append(Paragraph("Line Items", styles["Heading2"]))
+    item_data = [
+        ["Description", "Quantity", "Unit Price", "Tax Rate", "Line Total"],
+        ["Consulting", "2", "AUD 50.00", "10.0%", "AUD 100.00"]
+    ]
+    item_table = Table(item_data, colWidths=[70 * mm, 25 * mm, 35 * mm, 25 * mm, 35 * mm])
+    item_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(item_table)
+    elements.append(Spacer(1, 8 * mm))
+
+    totals = [
+        ["Subtotal:", "AUD 100.00"],
+        ["Tax Total:", "AUD 10.00"],
+        ["Grand Total:", "AUD 110.00"],
+    ]
+    totals_table = Table(totals, colWidths=[140 * mm, 30 * mm])
+    totals_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(totals_table)
+
+    doc.build(elements)
+    return buffer.getvalue()
+
 
 # -------------------------------------------------------
 # parse_json
@@ -127,6 +220,21 @@ def test_parse_ubl_xml_invalid():
 
 
 # -------------------------------------------------------
+# parse_generic_xml
+# -------------------------------------------------------
+def test_parse_generic_xml_valid():
+    result = parse_generic_xml(SAMPLE_GENERIC_XML)
+    assert result["invoice_number"] == "INV-001"
+    assert result["client_name"] == "XYZ Pty Ltd"
+    assert result["currency"] == "AUD"
+    assert len(result["items"]) == 1
+
+def test_parse_generic_xml_invalid():
+    with pytest.raises(ValueError, match="Invalid XML"):
+        parse_generic_xml("<not valid xml")
+
+
+# -------------------------------------------------------
 # dict_to_ubl_xml
 # -------------------------------------------------------
 def test_dict_to_ubl_xml_contains_required_tags():
@@ -142,94 +250,48 @@ def test_dict_to_ubl_xml_is_string():
 
 
 # -------------------------------------------------------
-# dict_to_json
-# -------------------------------------------------------
-def test_dict_to_json_valid():
-    result = dict_to_json(SAMPLE_DICT)
-    assert "INV-001" in result
-    assert "Consulting" in result
-
-def test_dict_to_json_is_string():
-    result = dict_to_json(SAMPLE_DICT)
-    assert isinstance(result, str)
-
-
-# -------------------------------------------------------
-# dict_to_csv
-# -------------------------------------------------------
-def test_dict_to_csv_contains_headers():
-    result = dict_to_csv(SAMPLE_DICT)
-    assert "invoice_number" in result
-    assert "client_name" in result
-
-def test_dict_to_csv_contains_data():
-    result = dict_to_csv(SAMPLE_DICT)
-    assert "INV-001" in result
-    assert "Consulting" in result
-
-def test_dict_to_csv_is_string():
-    result = dict_to_csv(SAMPLE_DICT)
-    assert isinstance(result, str)
-
-
-# -------------------------------------------------------
-# dict_to_pdf
-# -------------------------------------------------------
-def test_dict_to_pdf_returns_bytes():
-    result = dict_to_pdf(SAMPLE_DICT)
-    assert isinstance(result, bytes)
-
-def test_dict_to_pdf_is_pdf_header():
-    result = dict_to_pdf(SAMPLE_DICT)
-    assert result[:4] == b"%PDF"
-
-
-# -------------------------------------------------------
-# transform (main function)
+# transform - valid conversions
 # -------------------------------------------------------
 def test_transform_json_to_ubl_xml():
     result = transform("json", "ubl_xml", SAMPLE_JSON)
     assert "Invoice" in result
     assert "INV-001" in result
 
-def test_transform_json_to_csv():
-    result = transform("json", "csv", SAMPLE_JSON)
-    assert "INV-001" in result
-    assert "invoice_number" in result
-
-def test_transform_json_to_pdf():
-    result = transform("json", "pdf", SAMPLE_JSON)
-    assert isinstance(result, bytes)
-    assert result[:4] == b"%PDF"
-
 def test_transform_csv_to_ubl_xml():
     result = transform("csv", "ubl_xml", SAMPLE_CSV)
     assert "Invoice" in result
 
-def test_transform_csv_to_json():
-    result = transform("csv", "json", SAMPLE_CSV)
+def test_transform_ubl_xml_to_ubl_xml():
+    result = transform("ubl_xml", "ubl_xml", SAMPLE_UBL_XML)
+    assert "Invoice" in result
+    assert "INV-001" in result
+
+def test_transform_generic_xml_to_ubl_xml():
+    result = transform("xml", "ubl_xml", SAMPLE_GENERIC_XML)
+    assert "Invoice" in result
     assert "XYZ Pty Ltd" in result
 
-def test_transform_ubl_xml_to_json():
-    result = transform("ubl_xml", "json", SAMPLE_UBL_XML)
-    assert "INV-001" in result
+def test_transform_pdf_to_ubl_xml():
+    pdf_bytes = make_sample_pdf()
+    result = transform("pdf", "ubl_xml", pdf_bytes)
+    assert "Invoice" in result
 
-def test_transform_ubl_xml_to_csv():
-    result = transform("ubl_xml", "csv", SAMPLE_UBL_XML)
-    assert "INV-001" in result
+def test_transform_pdf_string_raises():
+    with pytest.raises(ValueError, match="base64"):
+        transform("pdf", "ubl_xml", "not bytes")
 
-def test_transform_ubl_xml_to_pdf():
-    result = transform("ubl_xml", "pdf", SAMPLE_UBL_XML)
-    assert isinstance(result, bytes)
 
+# -------------------------------------------------------
+# transform - error cases
+# -------------------------------------------------------
 def test_transform_unsupported_input_format():
     with pytest.raises(ValueError, match="Unsupported input format"):
-        transform("pdf", "json", "data")
+        transform("docx", "ubl_xml", "data")
 
 def test_transform_unsupported_output_format():
     with pytest.raises(ValueError, match="Unsupported output format"):
-        transform("json", "docx", SAMPLE_JSON)
+        transform("json", "csv", SAMPLE_JSON)
 
-def test_transform_same_format():
-    with pytest.raises(ValueError, match="Input and output formats must be different"):
-        transform("json", "json", SAMPLE_JSON)
+def test_transform_output_must_be_ubl_xml():
+    with pytest.raises(ValueError, match="Unsupported output format"):
+        transform("json", "pdf", SAMPLE_JSON)
