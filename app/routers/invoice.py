@@ -17,9 +17,6 @@ router = APIRouter(
 )
 
 
-# -------------------------------------------------------
-# HELPER: Generate UBL 2.1 XML from an invoice object
-# -------------------------------------------------------
 def generate_ubl_xml(invoice: Invoice, items: list) -> str:
     nsmap = {
         None: "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
@@ -65,9 +62,6 @@ def generate_ubl_xml(invoice: Invoice, items: list) -> str:
     return etree.tostring(root, pretty_print=True, xml_declaration=True, encoding="UTF-8").decode()
 
 
-# -------------------------------------------------------
-# HELPER: Generate generic XML (simpler, non-UBL format)
-# -------------------------------------------------------
 def generate_generic_xml(invoice: Invoice, items: list) -> str:
     root = etree.Element("Invoice")
 
@@ -94,9 +88,6 @@ def generate_generic_xml(invoice: Invoice, items: list) -> str:
     return etree.tostring(root, pretty_print=True, xml_declaration=True, encoding="UTF-8").decode()
 
 
-# -------------------------------------------------------
-# HELPER: Generate CSV from an invoice object
-# -------------------------------------------------------
 def generate_csv(invoice: Invoice, items: list) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
@@ -121,9 +112,6 @@ def generate_csv(invoice: Invoice, items: list) -> str:
     return output.getvalue()
 
 
-# -------------------------------------------------------
-# HELPER: Generate PDF from an invoice object
-# -------------------------------------------------------
 def generate_pdf(invoice: Invoice, items: list) -> bytes:
     try:
         from reportlab.lib.pagesizes import A4
@@ -207,9 +195,6 @@ def generate_pdf(invoice: Invoice, items: list) -> bytes:
     return buffer.getvalue()
 
 
-# -------------------------------------------------------
-# POST /invoices — Create a new invoice
-# -------------------------------------------------------
 @router.post("/", response_model=InvoiceResponse, status_code=201)
 def create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
     invoice_number = f"INV-{str(uuid.uuid4())[:8].upper()}"
@@ -258,17 +243,11 @@ def create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
     return new_invoice
 
 
-# -------------------------------------------------------
-# GET /invoices — List all invoices
-# -------------------------------------------------------
 @router.get("/", response_model=list[InvoiceResponse])
 def list_invoices(db: Session = Depends(get_db)):
     return db.query(Invoice).all()
 
 
-# -------------------------------------------------------
-# GET /invoices/{invoice_id}?format=json/ubl/xml/csv/pdf
-# -------------------------------------------------------
 @router.get("/{invoice_id}")
 def get_invoice(
     invoice_id: str,
@@ -312,9 +291,6 @@ def get_invoice(
         return InvoiceResponse.model_validate(invoice)
 
 
-# -------------------------------------------------------
-# PUT /invoices/{invoice_id} — Update an invoice
-# -------------------------------------------------------
 @router.put("/{invoice_id}", response_model=InvoiceResponse)
 def update_invoice(invoice_id: str, updates: InvoiceUpdate, db: Session = Depends(get_db)):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
@@ -329,9 +305,6 @@ def update_invoice(invoice_id: str, updates: InvoiceUpdate, db: Session = Depend
     return invoice
 
 
-# -------------------------------------------------------
-# DELETE /invoices/{invoice_id} — Delete an invoice
-# -------------------------------------------------------
 @router.delete("/{invoice_id}", status_code=200)
 def delete_invoice(invoice_id: str, db: Session = Depends(get_db)):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
