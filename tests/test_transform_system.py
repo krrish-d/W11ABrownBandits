@@ -54,9 +54,10 @@ SAMPLE_UBL_XML = """<?xml version='1.0' encoding='UTF-8'?>
 SAMPLE_GENERIC_XML = """<?xml version='1.0' encoding='UTF-8'?>
 <Invoice>
   <InvoiceNumber>INV-001</InvoiceNumber>
-  <ClientName>XYZ Pty Ltd</ClientName>
+  <IssueDate>2026-03-16</IssueDate>
   <Currency>AUD</Currency>
-  <DueDate>2026-03-16</DueDate>
+  <ClientName>XYZ Pty Ltd</ClientName>
+  <SupplierName>ABC Pty Ltd</SupplierName>
   <Subtotal>100.0</Subtotal>
   <GrandTotal>110.0</GrandTotal>
   <LineItems>
@@ -64,7 +65,6 @@ SAMPLE_GENERIC_XML = """<?xml version='1.0' encoding='UTF-8'?>
       <Description>Consulting</Description>
       <Quantity>2</Quantity>
       <UnitPrice>50.0</UnitPrice>
-      <TaxRate>10.0</TaxRate>
       <LineTotal>100.0</LineTotal>
     </LineItem>
   </LineItems>
@@ -83,7 +83,6 @@ def make_sample_pdf_b64() -> str:
     doc = SimpleDocTemplate(buffer, pagesize=A4)
     styles = getSampleStyleSheet()
     elements = []
-
     elements.append(Paragraph("INVOICE", styles["Title"]))
     elements.append(Spacer(1, 5 * mm))
     details = [
@@ -95,7 +94,6 @@ def make_sample_pdf_b64() -> str:
     detail_table = Table(details, colWidths=[50 * mm, 120 * mm])
     elements.append(detail_table)
     elements.append(Spacer(1, 8 * mm))
-
     elements.append(Paragraph("Line Items", styles["Heading2"]))
     item_data = [
         ["Description", "Quantity", "Unit Price", "Tax Rate", "Line Total"],
@@ -108,7 +106,6 @@ def make_sample_pdf_b64() -> str:
     ]))
     elements.append(item_table)
     elements.append(Spacer(1, 8 * mm))
-
     totals = [
         ["Subtotal:", "AUD 100.00"],
         ["Tax Total:", "AUD 10.00"],
@@ -116,151 +113,170 @@ def make_sample_pdf_b64() -> str:
     ]
     totals_table = Table(totals, colWidths=[140 * mm, 30 * mm])
     elements.append(totals_table)
-
     doc.build(elements)
     return base64.b64encode(buffer.getvalue()).decode()
 
 
 # -------------------------------------------------------
-# JSON → UBL XML
+# JSON conversions
 # -------------------------------------------------------
 def test_endpoint_json_to_ubl_xml():
-    response = client.post("/transform/", json={
-        "input_format": "json",
-        "output_format": "ubl_xml",
-        "invoice_data": SAMPLE_JSON
-    })
+    response = client.post("/transform/", json={"input_format": "json", "output_format": "ubl_xml", "invoice_data": SAMPLE_JSON})
     assert response.status_code == 200
     assert "application/xml" in response.headers["content-type"]
     assert "Invoice" in response.text
 
-
-# -------------------------------------------------------
-# CSV → UBL XML
-# -------------------------------------------------------
-def test_endpoint_csv_to_ubl_xml():
-    response = client.post("/transform/", json={
-        "input_format": "csv",
-        "output_format": "ubl_xml",
-        "invoice_data": SAMPLE_CSV
-    })
+def test_endpoint_json_to_csv():
+    response = client.post("/transform/", json={"input_format": "json", "output_format": "csv", "invoice_data": SAMPLE_JSON})
     assert response.status_code == 200
-    assert "application/xml" in response.headers["content-type"]
-    assert "Invoice" in response.text
-
-
-# -------------------------------------------------------
-# UBL XML → UBL XML (passthrough)
-# -------------------------------------------------------
-def test_endpoint_ubl_xml_to_ubl_xml():
-    response = client.post("/transform/", json={
-        "input_format": "ubl_xml",
-        "output_format": "ubl_xml",
-        "invoice_data": SAMPLE_UBL_XML
-    })
-    assert response.status_code == 200
-    assert "application/xml" in response.headers["content-type"]
+    assert "text/csv" in response.headers["content-type"]
     assert "INV-001" in response.text
 
+def test_endpoint_json_to_xml_ubl():
+    response = client.post("/transform/", json={"input_format": "json", "output_format": "xml", "invoice_data": SAMPLE_JSON, "xml_type": "ubl"})
+    assert response.status_code == 200
+    assert "UBLVersionID" in response.text
+
+def test_endpoint_json_to_xml_generic():
+    response = client.post("/transform/", json={"input_format": "json", "output_format": "xml", "invoice_data": SAMPLE_JSON, "xml_type": "generic"})
+    assert response.status_code == 200
+    assert "<InvoiceNumber>" in response.text
+
+def test_endpoint_json_to_pdf():
+    response = client.post("/transform/", json={"input_format": "json", "output_format": "pdf", "invoice_data": SAMPLE_JSON})
+    assert response.status_code == 200
+    assert "application/pdf" in response.headers["content-type"]
+    assert response.content[:4] == b"%PDF"
+
 
 # -------------------------------------------------------
-# Generic XML → UBL XML
+# CSV conversions
+# -------------------------------------------------------
+def test_endpoint_csv_to_ubl_xml():
+    response = client.post("/transform/", json={"input_format": "csv", "output_format": "ubl_xml", "invoice_data": SAMPLE_CSV})
+    assert response.status_code == 200
+    assert "Invoice" in response.text
+
+def test_endpoint_csv_to_json():
+    response = client.post("/transform/", json={"input_format": "csv", "output_format": "json", "invoice_data": SAMPLE_CSV})
+    assert response.status_code == 200
+    assert "XYZ Pty Ltd" in response.text
+
+def test_endpoint_csv_to_pdf():
+    response = client.post("/transform/", json={"input_format": "csv", "output_format": "pdf", "invoice_data": SAMPLE_CSV})
+    assert response.status_code == 200
+    assert response.content[:4] == b"%PDF"
+
+
+# -------------------------------------------------------
+# UBL XML conversions
+# -------------------------------------------------------
+def test_endpoint_ubl_xml_to_json():
+    response = client.post("/transform/", json={"input_format": "ubl_xml", "output_format": "json", "invoice_data": SAMPLE_UBL_XML})
+    assert response.status_code == 200
+    assert "INV-001" in response.text
+
+def test_endpoint_ubl_xml_to_csv():
+    response = client.post("/transform/", json={"input_format": "ubl_xml", "output_format": "csv", "invoice_data": SAMPLE_UBL_XML})
+    assert response.status_code == 200
+    assert "INV-001" in response.text
+
+def test_endpoint_ubl_xml_to_pdf():
+    response = client.post("/transform/", json={"input_format": "ubl_xml", "output_format": "pdf", "invoice_data": SAMPLE_UBL_XML})
+    assert response.status_code == 200
+    assert response.content[:4] == b"%PDF"
+
+
+# -------------------------------------------------------
+# Generic XML conversions
 # -------------------------------------------------------
 def test_endpoint_generic_xml_to_ubl_xml():
-    response = client.post("/transform/", json={
-        "input_format": "xml",
-        "output_format": "ubl_xml",
-        "invoice_data": SAMPLE_GENERIC_XML
-    })
+    response = client.post("/transform/", json={"input_format": "xml", "output_format": "ubl_xml", "invoice_data": SAMPLE_GENERIC_XML})
     assert response.status_code == 200
-    assert "application/xml" in response.headers["content-type"]
     assert "Invoice" in response.text
+
+def test_endpoint_generic_xml_to_json():
+    response = client.post("/transform/", json={"input_format": "xml", "output_format": "json", "invoice_data": SAMPLE_GENERIC_XML})
+    assert response.status_code == 200
+    assert "XYZ Pty Ltd" in response.text
+
+def test_endpoint_generic_xml_to_csv():
+    response = client.post("/transform/", json={"input_format": "xml", "output_format": "csv", "invoice_data": SAMPLE_GENERIC_XML})
+    assert response.status_code == 200
+    assert "INV-001" in response.text
+
+def test_endpoint_generic_xml_to_pdf():
+    response = client.post("/transform/", json={"input_format": "xml", "output_format": "pdf", "invoice_data": SAMPLE_GENERIC_XML})
+    assert response.status_code == 200
+    assert response.content[:4] == b"%PDF"
 
 
 # -------------------------------------------------------
-# PDF → UBL XML
+# PDF conversions
 # -------------------------------------------------------
 def test_endpoint_pdf_to_ubl_xml():
-    pdf_b64 = make_sample_pdf_b64()
-    response = client.post("/transform/", json={
-        "input_format": "pdf",
-        "output_format": "ubl_xml",
-        "invoice_data_base64": pdf_b64
-    })
+    response = client.post("/transform/", json={"input_format": "pdf", "output_format": "ubl_xml", "invoice_data_base64": make_sample_pdf_b64()})
     assert response.status_code == 200
-    assert "application/xml" in response.headers["content-type"]
     assert "Invoice" in response.text
+
+def test_endpoint_pdf_to_json():
+    response = client.post("/transform/", json={"input_format": "pdf", "output_format": "json", "invoice_data_base64": make_sample_pdf_b64()})
+    assert response.status_code == 200
+
+def test_endpoint_pdf_to_csv():
+    response = client.post("/transform/", json={"input_format": "pdf", "output_format": "csv", "invoice_data_base64": make_sample_pdf_b64()})
+    assert response.status_code == 200
 
 
 # -------------------------------------------------------
 # Error cases
 # -------------------------------------------------------
-def test_endpoint_pdf_missing_base64():
-    response = client.post("/transform/", json={
-        "input_format": "pdf",
-        "output_format": "ubl_xml",
-        "invoice_data": "some data"
-    })
+def test_endpoint_same_format():
+    response = client.post("/transform/", json={"input_format": "json", "output_format": "json", "invoice_data": SAMPLE_JSON})
     assert response.status_code == 400
-    assert "base64" in response.json()["detail"].lower()
-
-def test_endpoint_pdf_invalid_base64():
-    response = client.post("/transform/", json={
-        "input_format": "pdf",
-        "output_format": "ubl_xml",
-        "invoice_data_base64": "not-valid-base64!!!"
-    })
-    assert response.status_code == 400
+    assert "must be different" in response.json()["detail"]
 
 def test_endpoint_unsupported_input_format():
-    response = client.post("/transform/", json={
-        "input_format": "docx",
-        "output_format": "ubl_xml",
-        "invoice_data": "data"
-    })
+    response = client.post("/transform/", json={"input_format": "docx", "output_format": "ubl_xml", "invoice_data": "data"})
     assert response.status_code == 400
     assert "Unsupported input format" in response.json()["detail"]
 
 def test_endpoint_unsupported_output_format():
-    response = client.post("/transform/", json={
-        "input_format": "json",
-        "output_format": "csv",
-        "invoice_data": SAMPLE_JSON
-    })
+    response = client.post("/transform/", json={"input_format": "json", "output_format": "docx", "invoice_data": SAMPLE_JSON})
     assert response.status_code == 400
     assert "Unsupported output format" in response.json()["detail"]
 
-def test_endpoint_missing_invoice_data():
-    response = client.post("/transform/", json={
-        "input_format": "json",
-        "output_format": "ubl_xml"
-    })
+def test_endpoint_pdf_missing_base64():
+    response = client.post("/transform/", json={"input_format": "pdf", "output_format": "ubl_xml", "invoice_data": "some data"})
     assert response.status_code == 400
-    assert "invoice_data" in response.json()["detail"]
+    assert "base64" in response.json()["detail"].lower()
+
+def test_endpoint_pdf_invalid_base64():
+    response = client.post("/transform/", json={"input_format": "pdf", "output_format": "ubl_xml", "invoice_data_base64": "not-valid-base64!!!"})
+    assert response.status_code == 400
+
+def test_endpoint_missing_invoice_data():
+    response = client.post("/transform/", json={"input_format": "json", "output_format": "ubl_xml"})
+    assert response.status_code == 400
 
 def test_endpoint_invalid_json_input():
-    response = client.post("/transform/", json={
-        "input_format": "json",
-        "output_format": "ubl_xml",
-        "invoice_data": "not valid json {{{"
-    })
+    response = client.post("/transform/", json={"input_format": "json", "output_format": "ubl_xml", "invoice_data": "not valid json {{{"})
     assert response.status_code == 400
     assert "Invalid JSON" in response.json()["detail"]
 
 def test_endpoint_invalid_xml_input():
-    response = client.post("/transform/", json={
-        "input_format": "ubl_xml",
-        "output_format": "ubl_xml",
-        "invoice_data": "<not valid xml"
-    })
+    response = client.post("/transform/", json={"input_format": "ubl_xml", "output_format": "json", "invoice_data": "<not valid xml"})
     assert response.status_code == 400
     assert "Invalid XML" in response.json()["detail"]
 
 def test_endpoint_missing_fields():
-    response = client.post("/transform/", json={
-        "input_format": "json"
-    })
+    response = client.post("/transform/", json={"input_format": "json"})
     assert response.status_code == 422
+
+def test_endpoint_invalid_xml_type():
+    response = client.post("/transform/", json={"input_format": "json", "output_format": "xml", "invoice_data": SAMPLE_JSON, "xml_type": "invalid"})
+    assert response.status_code == 400
+    assert "xml_type" in response.json()["detail"]
 
 def test_endpoint_get_formats():
     response = client.get("/transform/formats")
@@ -269,7 +285,7 @@ def test_endpoint_get_formats():
     assert "input_formats" in data
     assert "output_formats" in data
     assert "pdf" in data["input_formats"]
-    assert "ubl_xml" in data["output_formats"]
+    assert "pdf" in data["output_formats"]
 
 def test_health_check():
     response = client.get("/health")

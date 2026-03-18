@@ -172,25 +172,20 @@ def parse_pdf(pdf_bytes: bytes) -> dict:
     client_name = extract_field("Client Name:")
     currency_raw = extract_field("Currency:")
     issue_date = extract_field("Due Date:")
-
-    # Currency may appear as just "AUD" or with extra text
     currency = currency_raw.split()[0] if currency_raw else "AUD"
 
-    # Extract totals
     subtotal_raw = extract_field("Subtotal:")
     grand_total_raw = extract_field("Grand Total:")
 
     def clean_amount(val):
         if val is None:
             return None
-        # Remove currency prefix e.g. "AUD 100.00" -> "100.00"
         parts = val.strip().split()
         return parts[-1] if parts else None
 
     subtotal = clean_amount(subtotal_raw)
     grand_total = clean_amount(grand_total_raw)
 
-    # Extract line items from table
     items = []
     lines = text.split("\n")
     in_items = False
@@ -204,8 +199,6 @@ def parse_pdf(pdf_bytes: bytes) -> dict:
             parts = line.strip().split()
             if len(parts) >= 4:
                 try:
-                    # Last value is line_total, second last is unit_price (with currency), 
-                    # third last is tax rate, fourth last is quantity
                     line_total = parts[-1]
                     unit_price = parts[-2]
                     quantity = parts[-4]
@@ -281,19 +274,169 @@ def dict_to_ubl_xml(data: dict) -> str:
 
 
 # -------------------------------------------------------
+# CONVERTER: dict → Generic XML string
+# -------------------------------------------------------
+def dict_to_generic_xml(data: dict) -> str:
+    root = etree.Element("Invoice")
+
+    etree.SubElement(root, "InvoiceNumber").text = data.get("invoice_number", "")
+    etree.SubElement(root, "IssueDate").text = data.get("issue_date", "")
+    etree.SubElement(root, "Currency").text = data.get("currency", "AUD")
+    etree.SubElement(root, "ClientName").text = data.get("client_name", "")
+    etree.SubElement(root, "SupplierName").text = data.get("supplier_name", "")
+    etree.SubElement(root, "Subtotal").text = str(data.get("subtotal", 0))
+    etree.SubElement(root, "GrandTotal").text = str(data.get("grand_total", 0))
+
+    items_el = etree.SubElement(root, "LineItems")
+    for item in data.get("items", []):
+        item_el = etree.SubElement(items_el, "LineItem")
+        etree.SubElement(item_el, "Description").text = item.get("description", "")
+        etree.SubElement(item_el, "Quantity").text = str(item.get("quantity", ""))
+        etree.SubElement(item_el, "UnitPrice").text = str(item.get("unit_price", ""))
+        etree.SubElement(item_el, "LineTotal").text = str(item.get("line_total", ""))
+
+    return etree.tostring(root, pretty_print=True, xml_declaration=True, encoding="UTF-8").decode()
+
+
+# -------------------------------------------------------
+# CONVERTER: dict → JSON string
+# -------------------------------------------------------
+def dict_to_json(data: dict) -> str:
+    return json.dumps(data, indent=2)
+
+
+# -------------------------------------------------------
+# CONVERTER: dict → CSV string
+# -------------------------------------------------------
+def dict_to_csv(data: dict) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow(["invoice_number", "currency", "client_name",
+                     "supplier_name", "issue_date", "subtotal", "grand_total"])
+    writer.writerow([
+        data.get("invoice_number", ""),
+        data.get("currency", ""),
+        data.get("client_name", ""),
+        data.get("supplier_name", ""),
+        data.get("issue_date", ""),
+        data.get("subtotal", ""),
+        data.get("grand_total", ""),
+    ])
+
+    writer.writerow([])
+    writer.writerow(["description", "quantity", "unit_price", "line_total"])
+    for item in data.get("items", []):
+        writer.writerow([
+            item.get("description", ""),
+            item.get("quantity", ""),
+            item.get("unit_price", ""),
+            item.get("line_total", ""),
+        ])
+
+    return output.getvalue()
+
+
+# -------------------------------------------------------
+# CONVERTER: dict → PDF bytes
+# -------------------------------------------------------
+def dict_to_pdf(data: dict) -> bytes:
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.units import mm
+    except ImportError:
+        raise ValueError("PDF generation requires reportlab. Run: pip install reportlab")
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    elements = []
+
+    elements.append(Paragraph("INVOICE", styles["Title"]))
+    elements.append(Spacer(1, 5 * mm))
+
+    details = [
+        ["Invoice Number:", data.get("invoice_number", "")],
+        ["Client Name:", data.get("client_name", "")],
+        ["Supplier:", data.get("supplier_name", "")],
+        ["Currency:", data.get("currency", "")],
+        ["Issue Date:", data.get("issue_date", "")],
+    ]
+    detail_table = Table(details, colWidths=[50 * mm, 120 * mm])
+    detail_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(detail_table)
+    elements.append(Spacer(1, 8 * mm))
+
+    elements.append(Paragraph("Line Items", styles["Heading2"]))
+    item_data = [["Description", "Quantity", "Unit Price", "Line Total"]]
+    for item in data.get("items", []):
+        item_data.append([
+            item.get("description", ""),
+            str(item.get("quantity", "")),
+            str(item.get("unit_price", "")),
+            str(item.get("line_total", "")),
+        ])
+
+    item_table = Table(item_data, colWidths=[80 * mm, 25 * mm, 35 * mm, 35 * mm])
+    item_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.lightgrey]),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(item_table)
+    elements.append(Spacer(1, 8 * mm))
+
+    totals = [
+        ["Subtotal:", str(data.get("subtotal", ""))],
+        ["Grand Total:", str(data.get("grand_total", ""))],
+    ]
+    totals_table = Table(totals, colWidths=[140 * mm, 30 * mm])
+    totals_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(totals_table)
+
+    doc.build(elements)
+    return buffer.getvalue()
+
+
+# -------------------------------------------------------
 # MAIN: transform(input_format, output_format, data)
 # -------------------------------------------------------
-SUPPORTED_INPUT_FORMATS = {"json", "csv", "ubl_xml", "xml", "pdf"}
+SUPPORTED_FORMATS = {"json", "csv", "xml", "ubl_xml", "pdf"}
 
-def transform(input_format: str, output_format: str, invoice_data):
+def transform(input_format: str, output_format: str, invoice_data, xml_type: str = "ubl"):
     input_format = input_format.lower().strip()
     output_format = output_format.lower().strip()
+    xml_type = xml_type.lower().strip() if xml_type else "ubl"
 
-    if input_format not in SUPPORTED_INPUT_FORMATS:
+    if input_format not in SUPPORTED_FORMATS:
         raise ValueError(f"Unsupported input format: '{input_format}'. Must be one of: json, csv, xml, ubl_xml, pdf")
 
-    if output_format != "ubl_xml":
-        raise ValueError(f"Unsupported output format: '{output_format}'. Only 'ubl_xml' is supported as output.")
+    if output_format not in SUPPORTED_FORMATS:
+        raise ValueError(f"Unsupported output format: '{output_format}'. Must be one of: json, csv, xml, ubl_xml, pdf")
+
+    if input_format == output_format:
+        raise ValueError("Input and output formats must be different")
+
+    if output_format == "xml" and xml_type not in {"ubl", "generic"}:
+        raise ValueError("xml_type must be either 'ubl' or 'generic'")
 
     # Parse input into intermediate dict
     if input_format == "json":
@@ -305,9 +448,21 @@ def transform(input_format: str, output_format: str, invoice_data):
     elif input_format == "xml":
         data = parse_generic_xml(invoice_data)
     elif input_format == "pdf":
-        # PDF input must be bytes
         if isinstance(invoice_data, str):
             raise ValueError("PDF input must be provided as base64-encoded bytes")
         data = parse_pdf(invoice_data)
 
-    return dict_to_ubl_xml(data)
+    # Convert dict to output format
+    if output_format == "ubl_xml":
+        return dict_to_ubl_xml(data)
+    elif output_format == "xml":
+        if xml_type == "generic":
+            return dict_to_generic_xml(data)
+        else:
+            return dict_to_ubl_xml(data)
+    elif output_format == "json":
+        return dict_to_json(data)
+    elif output_format == "csv":
+        return dict_to_csv(data)
+    elif output_format == "pdf":
+        return dict_to_pdf(data)
