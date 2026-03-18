@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import re
 from lxml import etree
 
 
@@ -22,19 +23,16 @@ def parse_ubl_xml(xml_string: str) -> dict:
 
     currency = get("DocumentCurrencyCode") or "AUD"
 
-    # Extract supplier name
     supplier_name = None
     supplier_el = root.find(f"{{{cac}}}AccountingSupplierParty/{{{cac}}}Party/{{{cac}}}PartyName/{{{cbc}}}Name")
     if supplier_el is not None:
         supplier_name = supplier_el.text
 
-    # Extract customer name
     customer_name = None
     customer_el = root.find(f"{{{cac}}}AccountingCustomerParty/{{{cac}}}Party/{{{cac}}}PartyName/{{{cbc}}}Name")
     if customer_el is not None:
         customer_name = customer_el.text
 
-    # Extract totals
     monetary = root.find(f"{{{cac}}}LegalMonetaryTotal")
     subtotal = None
     grand_total = None
@@ -44,7 +42,6 @@ def parse_ubl_xml(xml_string: str) -> dict:
         subtotal = sub_el.text if sub_el is not None else None
         grand_total = grand_el.text if grand_el is not None else None
 
-    # Extract line items
     items = []
     for line in root.findall(f"{{{cac}}}InvoiceLine"):
         desc_el = line.find(f"{{{cac}}}Item/{{{cbc}}}Description")
@@ -71,6 +68,42 @@ def parse_ubl_xml(xml_string: str) -> dict:
 
 
 # -------------------------------------------------------
+# HELPER: Parse generic XML string into a plain dict
+# -------------------------------------------------------
+def parse_generic_xml(xml_string: str) -> dict:
+    try:
+        root = etree.fromstring(xml_string.encode())
+    except etree.XMLSyntaxError as e:
+        raise ValueError(f"Invalid XML: {e}")
+
+    def get(tag):
+        el = root.find(tag)
+        return el.text if el is not None else None
+
+    items = []
+    items_el = root.find("LineItems")
+    if items_el is not None:
+        for item_el in items_el.findall("LineItem"):
+            items.append({
+                "description": item_el.findtext("Description"),
+                "quantity": item_el.findtext("Quantity"),
+                "unit_price": item_el.findtext("UnitPrice"),
+                "line_total": item_el.findtext("LineTotal"),
+            })
+
+    return {
+        "invoice_number": get("InvoiceNumber"),
+        "issue_date": get("DueDate"),
+        "currency": get("Currency") or "AUD",
+        "client_name": get("ClientName"),
+        "supplier_name": "Supplier",
+        "subtotal": get("Subtotal"),
+        "grand_total": get("GrandTotal"),
+        "items": items
+    }
+
+
+# -------------------------------------------------------
 # HELPER: Parse JSON string into a plain dict
 # -------------------------------------------------------
 def parse_json(json_string: str) -> dict:
@@ -89,7 +122,6 @@ def parse_csv(csv_string: str) -> dict:
     if not rows:
         raise ValueError("CSV is empty or missing headers")
 
-    # First row has invoice-level fields
     row = rows[0]
 
     required = ["client_name", "currency", "due_date"]
@@ -112,6 +144,82 @@ def parse_csv(csv_string: str) -> dict:
         "currency": row["currency"],
         "client_name": row["client_name"],
         "issue_date": row.get("due_date"),
+        "items": items
+    }
+
+
+# -------------------------------------------------------
+# HELPER: Parse PDF bytes into a plain dict
+# -------------------------------------------------------
+def parse_pdf(pdf_bytes: bytes) -> dict:
+    try:
+        import pdfplumber
+    except ImportError:
+        raise ValueError("PDF parsing requires pdfplumber. Run: pip install pdfplumber")
+
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+    if not text.strip():
+        raise ValueError("Could not extract text from PDF")
+
+    def extract_field(label):
+        pattern = rf"{re.escape(label)}\s*([^\n]+)"
+        match = re.search(pattern, text)
+        return match.group(1).strip() if match else None
+
+    invoice_number = extract_field("Invoice Number:")
+    client_name = extract_field("Client Name:")
+    currency_raw = extract_field("Currency:")
+    issue_date = extract_field("Due Date:")
+    currency = currency_raw.split()[0] if currency_raw else "AUD"
+
+    subtotal_raw = extract_field("Subtotal:")
+    grand_total_raw = extract_field("Grand Total:")
+
+    def clean_amount(val):
+        if val is None:
+            return None
+        parts = val.strip().split()
+        return parts[-1] if parts else None
+
+    subtotal = clean_amount(subtotal_raw)
+    grand_total = clean_amount(grand_total_raw)
+
+    items = []
+    lines = text.split("\n")
+    in_items = False
+    for line in lines:
+        if "Description" in line and "Quantity" in line:
+            in_items = True
+            continue
+        if in_items:
+            if "Subtotal:" in line or "Tax Total:" in line or "Grand Total:" in line:
+                break
+            parts = line.strip().split()
+            if len(parts) >= 4:
+                try:
+                    line_total = parts[-1]
+                    unit_price = parts[-2]
+                    quantity = parts[-4]
+                    description = " ".join(parts[:-4])
+                    items.append({
+                        "description": description,
+                        "quantity": quantity,
+                        "unit_price": unit_price,
+                        "line_total": line_total,
+                    })
+                except (IndexError, ValueError):
+                    continue
+
+    return {
+        "invoice_number": invoice_number,
+        "issue_date": issue_date,
+        "currency": currency,
+        "client_name": client_name,
+        "supplier_name": "Supplier",
+        "subtotal": subtotal,
+        "grand_total": grand_total,
         "items": items
     }
 
@@ -166,6 +274,31 @@ def dict_to_ubl_xml(data: dict) -> str:
 
 
 # -------------------------------------------------------
+# CONVERTER: dict → Generic XML string
+# -------------------------------------------------------
+def dict_to_generic_xml(data: dict) -> str:
+    root = etree.Element("Invoice")
+
+    etree.SubElement(root, "InvoiceNumber").text = data.get("invoice_number", "")
+    etree.SubElement(root, "IssueDate").text = data.get("issue_date", "")
+    etree.SubElement(root, "Currency").text = data.get("currency", "AUD")
+    etree.SubElement(root, "ClientName").text = data.get("client_name", "")
+    etree.SubElement(root, "SupplierName").text = data.get("supplier_name", "")
+    etree.SubElement(root, "Subtotal").text = str(data.get("subtotal", 0))
+    etree.SubElement(root, "GrandTotal").text = str(data.get("grand_total", 0))
+
+    items_el = etree.SubElement(root, "LineItems")
+    for item in data.get("items", []):
+        item_el = etree.SubElement(items_el, "LineItem")
+        etree.SubElement(item_el, "Description").text = item.get("description", "")
+        etree.SubElement(item_el, "Quantity").text = str(item.get("quantity", ""))
+        etree.SubElement(item_el, "UnitPrice").text = str(item.get("unit_price", ""))
+        etree.SubElement(item_el, "LineTotal").text = str(item.get("line_total", ""))
+
+    return etree.tostring(root, pretty_print=True, xml_declaration=True, encoding="UTF-8").decode()
+
+
+# -------------------------------------------------------
 # CONVERTER: dict → JSON string
 # -------------------------------------------------------
 def dict_to_json(data: dict) -> str:
@@ -179,7 +312,8 @@ def dict_to_csv(data: dict) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
 
-    writer.writerow(["invoice_number", "currency", "client_name", "supplier_name", "issue_date", "subtotal", "grand_total"])
+    writer.writerow(["invoice_number", "currency", "client_name",
+                     "supplier_name", "issue_date", "subtotal", "grand_total"])
     writer.writerow([
         data.get("invoice_number", ""),
         data.get("currency", ""),
@@ -283,22 +417,26 @@ def dict_to_pdf(data: dict) -> bytes:
 
 
 # -------------------------------------------------------
-# MAIN: transform(input_format, output_format, data) -> str | bytes
+# MAIN: transform(input_format, output_format, data)
 # -------------------------------------------------------
-SUPPORTED_FORMATS = {"json", "csv", "ubl_xml", "pdf"}
+SUPPORTED_FORMATS = {"json", "csv", "xml", "ubl_xml", "pdf"}
 
-def transform(input_format: str, output_format: str, invoice_data: str):
+def transform(input_format: str, output_format: str, invoice_data, xml_type: str = "ubl"):
     input_format = input_format.lower().strip()
     output_format = output_format.lower().strip()
+    xml_type = xml_type.lower().strip() if xml_type else "ubl"
 
-    if input_format not in SUPPORTED_FORMATS - {"pdf"}:
-        raise ValueError(f"Unsupported input format: '{input_format}'. Must be one of: json, csv, ubl_xml")
+    if input_format not in SUPPORTED_FORMATS:
+        raise ValueError(f"Unsupported input format: '{input_format}'. Must be one of: json, csv, xml, ubl_xml, pdf")
 
     if output_format not in SUPPORTED_FORMATS:
-        raise ValueError(f"Unsupported output format: '{output_format}'. Must be one of: json, csv, ubl_xml, pdf")
+        raise ValueError(f"Unsupported output format: '{output_format}'. Must be one of: json, csv, xml, ubl_xml, pdf")
 
     if input_format == output_format:
         raise ValueError("Input and output formats must be different")
+
+    if output_format == "xml" and xml_type not in {"ubl", "generic"}:
+        raise ValueError("xml_type must be either 'ubl' or 'generic'")
 
     # Parse input into intermediate dict
     if input_format == "json":
@@ -307,10 +445,21 @@ def transform(input_format: str, output_format: str, invoice_data: str):
         data = parse_csv(invoice_data)
     elif input_format == "ubl_xml":
         data = parse_ubl_xml(invoice_data)
+    elif input_format == "xml":
+        data = parse_generic_xml(invoice_data)
+    elif input_format == "pdf":
+        if isinstance(invoice_data, str):
+            raise ValueError("PDF input must be provided as base64-encoded bytes")
+        data = parse_pdf(invoice_data)
 
     # Convert dict to output format
     if output_format == "ubl_xml":
         return dict_to_ubl_xml(data)
+    elif output_format == "xml":
+        if xml_type == "generic":
+            return dict_to_generic_xml(data)
+        else:
+            return dict_to_ubl_xml(data)
     elif output_format == "json":
         return dict_to_json(data)
     elif output_format == "csv":
