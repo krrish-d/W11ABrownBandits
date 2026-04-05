@@ -15,7 +15,7 @@ export default function FormatDownloader({ invoiceId }) {
       setPreview("");
 
       if (format === "pdf") {
-        const res = await client.get(`/invoices/${invoiceId}?format=pdf`, { responseType: "blob" });
+        const res = await client.get(`/invoice/fetch/${invoiceId}?format=pdf`, { responseType: "blob" });
         const url = createBlobUrl(res.data, "application/pdf");
         const a = document.createElement("a");
         a.href = url;
@@ -26,7 +26,7 @@ export default function FormatDownloader({ invoiceId }) {
       }
 
       const responseType = format === "csv" ? "blob" : "text";
-      const res = await client.get(`/invoices/${invoiceId}?format=${format}`, { responseType });
+      const res = await client.get(`/invoice/fetch/${invoiceId}?format=${format}`, { responseType });
 
       if (format === "csv") {
         const url = createBlobUrl(res.data, "text/csv");

@@ -15,7 +15,7 @@ export default function InvoiceDetail() {
   const fetchInvoice = async () => {
     try {
       setLoading(true);
-      const { data } = await client.get(`/invoices/${id}`);
+      const { data } = await client.get(`/invoice/fetch/${id}`);
       setInvoice(data);
       setEditData({
         client_name: data.client_name || "",
@@ -38,7 +38,7 @@ export default function InvoiceDetail() {
   const deleteInvoice = async () => {
     if (!window.confirm("Delete this invoice?")) return;
     try {
-      await client.delete(`/invoices/${id}`);
+      await client.delete(`/invoice/delete/${id}`);
       toast.success("Invoice deleted");
       navigate("/invoices");
     } catch (error) {
@@ -48,7 +48,7 @@ export default function InvoiceDetail() {
 
   const updateInvoice = async () => {
     try {
-      await client.put(`/invoices/${id}`, editData);
+      await client.put(`/invoice/update/${id}`, editData);
       toast.success("Invoice updated");
       setEditOpen(false);
       fetchInvoice();

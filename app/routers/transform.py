@@ -1,14 +1,13 @@
 import base64
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
-from typing import Optional
+
 from app.services.transform import transform
 
-router = APIRouter(
-    prefix="/transform",
-    tags=["Invoice Transformation"]
-)
+router = APIRouter(tags=["Invoice Transformation"])
 
 
 class TransformRequest(BaseModel):
@@ -19,7 +18,7 @@ class TransformRequest(BaseModel):
     xml_type: Optional[str] = "ubl"
 
 
-@router.post("/")
+@router.post("/transform")
 def transform_invoice(request: TransformRequest):
     """
     Transform an invoice between supported formats.
@@ -39,66 +38,73 @@ def transform_invoice(request: TransformRequest):
             if not request.invoice_data_base64:
                 raise HTTPException(
                     status_code=400,
-                    detail="PDF input must be provided as base64-encoded string in 'invoice_data_base64'"
+                    detail="PDF input must be provided as base64-encoded string in 'invoice_data_base64'",
                 )
             try:
                 pdf_bytes = base64.b64decode(request.invoice_data_base64)
             except Exception:
                 raise HTTPException(
                     status_code=400,
-                    detail="Invalid base64 encoding for PDF input"
-                )
+                    detail="Invalid base64 encoding for PDF input",
+                ) from None
             result = transform(
                 request.input_format,
                 request.output_format,
                 pdf_bytes,
-                request.xml_type or "ubl"
+                request.xml_type or "ubl",
             )
         else:
             if not request.invoice_data:
                 raise HTTPException(
                     status_code=400,
-                    detail="invoice_data is required for non-PDF formats"
+                    detail="invoice_data is required for non-PDF formats",
                 )
             result = transform(
                 request.input_format,
                 request.output_format,
                 request.invoice_data,
-                request.xml_type or "ubl"
+                request.xml_type or "ubl",
             )
 
     except HTTPException:
         raise
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     if request.output_format == "ubl_xml" or request.output_format == "xml":
         return Response(content=result, media_type="application/xml")
-    elif request.output_format == "csv":
+    if request.output_format == "csv":
         return Response(
             content=result,
             media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=invoice.csv"}
+            headers={"Content-Disposition": "attachment; filename=invoice.csv"},
         )
-    elif request.output_format == "pdf":
+    if request.output_format == "pdf":
         return Response(
             content=result,
             media_type="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=invoice.pdf"}
+            headers={"Content-Disposition": "attachment; filename=invoice.pdf"},
         )
-    else:
-        return {"status": "success", "converted_invoice": result}
+    return {"status": "success", "converted_invoice": result}
 
 
-@router.get("/formats")
+@router.get("/transform/formats")
 def get_supported_formats():
-    """
-    Returns the list of supported input and output formats for invoice transformation.
-    """
     return {
         "input_formats": ["json", "csv", "xml", "ubl_xml", "pdf"],
         "output_formats": ["json", "csv", "xml", "ubl_xml", "pdf"],
+        "supported_conversions": [
+            "json → ubl_xml",
+            "json → csv",
+            "json → pdf",
+            "csv → ubl_xml",
+            "csv → json",
+            "csv → pdf",
+            "ubl_xml → json",
+            "ubl_xml → csv",
+            "ubl_xml → pdf",
+        ],
         "xml_type_options": ["ubl", "generic"],
         "note_pdf_input": "PDF input must be provided as base64-encoded string in 'invoice_data_base64'",
-        "note_xml_output": "When output_format is 'xml', use xml_type to specify 'ubl' or 'generic' (default: 'ubl')"
+        "note_xml_output": "When output_format is 'xml', use xml_type to specify 'ubl' or 'generic' (default: 'ubl')",
     }

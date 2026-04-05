@@ -11,7 +11,7 @@ export default function InvoiceLibrary() {
   const fetchInvoices = async () => {
     try {
       setLoading(true);
-      const { data } = await client.get("/invoices");
+      const { data } = await client.get("/invoice/list");
       setInvoices(data);
     } catch (error) {
       toast.error(formatApiError(error));
@@ -39,7 +39,7 @@ export default function InvoiceLibrary() {
     if (!ok) return;
 
     try {
-      await client.delete(`/invoices/${invoice.invoice_id}`);
+      await client.delete(`/invoice/delete/${invoice.invoice_id}`);
       toast.success("Invoice deleted");
       setInvoices((prev) => prev.filter((i) => i.invoice_id !== invoice.invoice_id));
     } catch (error) {

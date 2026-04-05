@@ -17,6 +17,18 @@ Simple React frontend for the E-Invoice API project.
 - Production build: `npm run build`
 - Preview build: `npm run preview`
 
+## Deploy on Vercel (frontend only)
+
+This app is a static Vite build. The FastAPI backend should run elsewhere (Railway, Render, Fly, etc.); the UI calls it via `VITE_API_BASE_URL`.
+
+1. Import the Git repo in Vercel.
+2. Set **Root Directory** to `frontend`.
+3. Framework is detected as Vite; build output is `dist` (see `vercel.json` for SPA rewrites so React Router paths work on refresh).
+4. In **Project → Settings → Environment Variables**, add `VITE_API_BASE_URL` with your public API base URL (must be `https://` in production).
+5. Redeploy after changing env vars.
+
+`vercel.json` rewrites unknown paths to `index.html` so routes like `/invoices` load the app instead of 404.
+
 ## Implemented Pages
 
 - Dashboard

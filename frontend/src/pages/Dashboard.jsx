@@ -6,7 +6,7 @@ import StatusBadge from "../components/StatusBadge";
 
 const services = [
   { key: "api", label: "Core API", endpoint: "/health" },
-  { key: "invoice", label: "Invoice Service", endpoint: "/invoices" },
+  { key: "invoice", label: "Invoice Service", endpoint: "/invoice/list" },
   { key: "transform", label: "Transform Service", endpoint: "/transform/formats" },
   { key: "validate", label: "Validation Service", endpoint: "/validate/rulesets" },
 ];

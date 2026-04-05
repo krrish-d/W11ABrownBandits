@@ -61,17 +61,17 @@ export default function CreateInvoice() {
   const fetchOutput = async (invoiceId, outputFormat) => {
     const apiFormat = formatMap[outputFormat] || "json";
     if (apiFormat === "pdf") {
-      const res = await client.get(`/invoices/${invoiceId}?format=pdf`, { responseType: "blob" });
+      const res = await client.get(`/invoice/fetch/${invoiceId}?format=pdf`, { responseType: "blob" });
       const url = createBlobUrl(res.data, "application/pdf");
       setOutput(`PDF ready: ${url}`);
       return;
     }
     if (apiFormat === "csv") {
-      const res = await client.get(`/invoices/${invoiceId}?format=csv`, { responseType: "text" });
+      const res = await client.get(`/invoice/fetch/${invoiceId}?format=csv`, { responseType: "text" });
       setOutput(res.data);
       return;
     }
-    const res = await client.get(`/invoices/${invoiceId}?format=${apiFormat}`, {
+    const res = await client.get(`/invoice/fetch/${invoiceId}?format=${apiFormat}`, {
       responseType: apiFormat === "json" ? "json" : "text",
     });
     setOutput(apiFormat === "json" ? JSON.stringify(res.data, null, 2) : res.data);
@@ -99,7 +99,7 @@ export default function CreateInvoice() {
         })),
       };
 
-      const { data } = await client.post("/invoices", payload);
+      const { data } = await client.post("/invoice/create", payload);
       setCreated(data);
       toast.success("Invoice created successfully");
       await fetchOutput(data.invoice_id, form.outputFormat);

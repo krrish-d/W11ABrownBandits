@@ -12,7 +12,7 @@ from app.models.invoice import Invoice, LineItem
 from app.schemas.invoice import InvoiceCreate, InvoiceResponse, InvoiceUpdate
 
 router = APIRouter(
-    prefix="/invoices",
+    prefix="/invoice",
     tags=["Invoice Creation"]
 )
 
@@ -195,7 +195,7 @@ def generate_pdf(invoice: Invoice, items: list) -> bytes:
     return buffer.getvalue()
 
 
-@router.post("/", response_model=InvoiceResponse, status_code=201)
+@router.post("/create", response_model=InvoiceResponse, status_code=201)
 def create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
     invoice_number = f"INV-{str(uuid.uuid4())[:8].upper()}"
 
@@ -243,12 +243,12 @@ def create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
     return new_invoice
 
 
-@router.get("/", response_model=list[InvoiceResponse])
+@router.get("/list", response_model=list[InvoiceResponse])
 def list_invoices(db: Session = Depends(get_db)):
     return db.query(Invoice).all()
 
 
-@router.get("/{invoice_id}")
+@router.get("/fetch/{invoice_id}")
 def get_invoice(
     invoice_id: str,
     format: str = Query(
@@ -291,7 +291,7 @@ def get_invoice(
         return InvoiceResponse.model_validate(invoice)
 
 
-@router.put("/{invoice_id}", response_model=InvoiceResponse)
+@router.put("/update/{invoice_id}", response_model=InvoiceResponse)
 def update_invoice(invoice_id: str, updates: InvoiceUpdate, db: Session = Depends(get_db)):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
     if not invoice:
@@ -305,7 +305,7 @@ def update_invoice(invoice_id: str, updates: InvoiceUpdate, db: Session = Depend
     return invoice
 
 
-@router.delete("/{invoice_id}", status_code=200)
+@router.delete("/delete/{invoice_id}", status_code=200)
 def delete_invoice(invoice_id: str, db: Session = Depends(get_db)):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
     if not invoice:
