@@ -18,7 +18,7 @@ export default function SendInvoice() {
 
   useEffect(() => {
     client
-      .get("/invoices")
+      .get("/invoice/list")
       .then(({ data }) => {
         setInvoices(data);
         if (data.length) setSelectedId(data[0].invoice_id);
@@ -44,7 +44,7 @@ export default function SendInvoice() {
           toast.error("Select an invoice first.");
           return;
         }
-        const res = await client.get(`/invoices/${selectedId}?format=ubl`, { responseType: "text" });
+        const res = await client.get(`/invoice/fetch/${selectedId}?format=ubl`, { responseType: "text" });
         xmlContent = res.data;
       }
 
