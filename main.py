@@ -13,8 +13,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Open CORS for local dev and POC testing (browser + Vite on another origin).
-# Tighten allow_origins for production (e.g. your Vercel domain only).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,11 +20,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Connect routers
 app.include_router(invoice.router)
+app.include_router(invoice.legacy_router)
 app.include_router(transform.router)
 app.include_router(validate.router)
 app.include_router(communicate.router)
+
+app.include_router(invoice.router, prefix="/v2")
+app.include_router(transform.router, prefix="/v2")
+app.include_router(validate.router, prefix="/v2")
+app.include_router(communicate.router, prefix="/v2")
 
 @app.get("/health")
 def health_check():

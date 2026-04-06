@@ -16,6 +16,11 @@ router = APIRouter(
     tags=["Invoice Creation"]
 )
 
+legacy_router = APIRouter(
+    prefix="/invoices",
+    tags=["Invoice Creation (Legacy)"]
+)
+
 
 def generate_ubl_xml(invoice: Invoice, items: list) -> str:
     nsmap = {
@@ -314,3 +319,36 @@ def delete_invoice(invoice_id: str, db: Session = Depends(get_db)):
     db.delete(invoice)
     db.commit()
     return {"message": f"Invoice {invoice_id} deleted successfully"}
+
+
+# Legacy Sprint 1 routes kept accessible in parallel
+@legacy_router.post("/", response_model=InvoiceResponse, status_code=201)
+def legacy_create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
+    return create_invoice(invoice_data, db)
+
+
+@legacy_router.get("/", response_model=list[InvoiceResponse])
+def legacy_list_invoices(db: Session = Depends(get_db)):
+    return list_invoices(db)
+
+
+@legacy_router.get("/{invoice_id}")
+def legacy_get_invoice(
+    invoice_id: str,
+    format: str = Query(
+        default="json",
+        description="Output format: json, ubl, xml, csv, pdf"
+    ),
+    db: Session = Depends(get_db)
+):
+    return get_invoice(invoice_id, format, db)
+
+
+@legacy_router.put("/{invoice_id}", response_model=InvoiceResponse)
+def legacy_update_invoice(invoice_id: str, updates: InvoiceUpdate, db: Session = Depends(get_db)):
+    return update_invoice(invoice_id, updates, db)
+
+
+@legacy_router.delete("/{invoice_id}", status_code=200)
+def legacy_delete_invoice(invoice_id: str, db: Session = Depends(get_db)):
+    return delete_invoice(invoice_id, db)

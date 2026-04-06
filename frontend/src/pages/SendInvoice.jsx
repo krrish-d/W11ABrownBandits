@@ -19,7 +19,7 @@ export default function SendInvoice() {
   useEffect(() => {
     client
       .get("/invoice/list")
-      .then(({ data }) => {
+fin      .then(({ data }) => {
         setInvoices(data);
         if (data.length) setSelectedId(data[0].invoice_id);
       })
