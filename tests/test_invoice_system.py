@@ -1,4 +1,5 @@
 import pytest
+import os
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -7,6 +8,8 @@ from main import app
 
 # In-memory test database
 TEST_DATABASE_URL = "sqlite:///./test_invoices.db"
+if os.path.exists("./test_invoices.db"):
+    os.remove("./test_invoices.db")
 engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(bind=engine)
@@ -22,13 +25,18 @@ app.dependency_overrides[get_db] = override_get_db
 client = TestClient(app)
 
 SAMPLE_INVOICE = {
-    "client_name": "Test Client",
-    "client_email": "test@example.com",
+    "seller_name": "Test Seller",
+    "seller_address": "1 Seller St, Melbourne VIC",
+    "seller_email": "seller@example.com",
+    "buyer_name": "Test Client",
+    "buyer_address": "2 Buyer Rd, Sydney NSW",
+    "buyer_email": "test@example.com",
     "currency": "AUD",
     "due_date": "2026-06-01",
     "notes": "Test note",
     "items": [
         {
+            "item_number": "1",
             "description": "Laptop",
             "quantity": 2,
             "unit_price": 500.0,
@@ -64,8 +72,8 @@ def test_create_invoice_multiple_items():
     payload = {
         **SAMPLE_INVOICE,
         "items": [
-            {"description": "Item A", "quantity": 1, "unit_price": 100.0, "tax_rate": 10.0},
-            {"description": "Item B", "quantity": 3, "unit_price": 50.0, "tax_rate": 5.0}
+            {"item_number": "1", "description": "Item A", "quantity": 1, "unit_price": 100.0, "tax_rate": 10.0},
+            {"item_number": "2", "description": "Item B", "quantity": 3, "unit_price": 50.0, "tax_rate": 5.0}
         ]
     }
     res = client.post("/invoice/create", json=payload)
@@ -79,7 +87,7 @@ def test_create_invoice_unique_ids():
 
 def test_create_invoice_missing_client_name():
     payload = {**SAMPLE_INVOICE}
-    del payload["client_name"]
+    del payload["buyer_name"]
     res = client.post("/invoice/create", json=payload)
     assert res.status_code == 422
 
@@ -124,7 +132,7 @@ def test_get_invoice_format_xml():
     res = client.get(f"/invoice/fetch/{invoice_id}?format=xml")
     assert res.status_code == 200
     assert "application/xml" in res.headers["content-type"]
-    assert b"ClientName" in res.content
+    assert b"BuyerName" in res.content
 
 def test_get_invoice_format_csv():
     invoice_id = create_invoice()

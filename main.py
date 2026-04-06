@@ -2,10 +2,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import communicate, invoice, transform, validate
-from app.database import Base, engine
+from app.database import Base, engine, ensure_schema_compatibility
 
 # Create database tables automatically on startup
 Base.metadata.create_all(bind=engine)
+ensure_schema_compatibility()
 
 app = FastAPI(
     title="E-Invoice API",

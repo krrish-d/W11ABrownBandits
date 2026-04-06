@@ -20,12 +20,15 @@ SAMPLE_DICT = {
     "invoice_number": "INV-001",
     "issue_date": "2026-03-16",
     "currency": "AUD",
-    "client_name": "XYZ Pty Ltd",
-    "supplier_name": "ABC Pty Ltd",
+    "buyer_name": "XYZ Pty Ltd",
+    "buyer_address": "2 Buyer Rd, Sydney NSW",
+    "seller_name": "ABC Pty Ltd",
+    "seller_address": "1 Seller St, Melbourne VIC",
     "subtotal": 100.0,
     "grand_total": 110.0,
     "items": [
         {
+            "item_number": "1",
             "description": "Consulting",
             "quantity": 2,
             "unit_price": 50.0,
@@ -34,10 +37,10 @@ SAMPLE_DICT = {
     ]
 }
 
-SAMPLE_JSON = '{"invoice_number": "INV-001", "issue_date": "2026-03-16", "currency": "AUD", "client_name": "XYZ Pty Ltd", "supplier_name": "ABC Pty Ltd", "subtotal": 100.0, "grand_total": 110.0, "items": [{"description": "Consulting", "quantity": 2, "unit_price": 50.0, "line_total": 100.0}]}'
+SAMPLE_JSON = '{"invoice_number": "INV-001", "issue_date": "2026-03-16", "currency": "AUD", "buyer_name": "XYZ Pty Ltd", "buyer_address": "2 Buyer Rd, Sydney NSW", "seller_name": "ABC Pty Ltd", "seller_address": "1 Seller St, Melbourne VIC", "subtotal": 100.0, "grand_total": 110.0, "items": [{"item_number": "1", "description": "Consulting", "quantity": 2, "unit_price": 50.0, "line_total": 100.0}]}'
 
-SAMPLE_CSV = """invoice_number,currency,client_name,due_date,subtotal,grand_total,description,quantity,unit_price,line_total
-INV-001,AUD,XYZ Pty Ltd,2026-03-16,100.0,110.0,Consulting,2,50.0,100.0"""
+SAMPLE_CSV = """invoice_number,currency,seller_name,seller_address,buyer_name,buyer_address,due_date,subtotal,grand_total,item_number,description,quantity,unit_price,line_total
+INV-001,AUD,ABC Pty Ltd,"1 Seller St, Melbourne VIC",XYZ Pty Ltd,"2 Buyer Rd, Sydney NSW",2026-03-16,100.0,110.0,1,Consulting,2,50.0,100.0"""
 
 SAMPLE_UBL_XML = """<?xml version='1.0' encoding='UTF-8'?>
 <Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
@@ -53,6 +56,9 @@ SAMPLE_UBL_XML = """<?xml version='1.0' encoding='UTF-8'?>
       <cac:PartyName>
         <cbc:Name>ABC Pty Ltd</cbc:Name>
       </cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>1 Seller St, Melbourne VIC</cbc:StreetName>
+      </cac:PostalAddress>
     </cac:Party>
   </cac:AccountingSupplierParty>
   <cac:AccountingCustomerParty>
@@ -60,6 +66,9 @@ SAMPLE_UBL_XML = """<?xml version='1.0' encoding='UTF-8'?>
       <cac:PartyName>
         <cbc:Name>XYZ Pty Ltd</cbc:Name>
       </cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>2 Buyer Rd, Sydney NSW</cbc:StreetName>
+      </cac:PostalAddress>
     </cac:Party>
   </cac:AccountingCustomerParty>
   <cac:LegalMonetaryTotal>
@@ -85,12 +94,15 @@ SAMPLE_GENERIC_XML = """<?xml version='1.0' encoding='UTF-8'?>
   <InvoiceNumber>INV-001</InvoiceNumber>
   <IssueDate>2026-03-16</IssueDate>
   <Currency>AUD</Currency>
-  <ClientName>XYZ Pty Ltd</ClientName>
-  <SupplierName>ABC Pty Ltd</SupplierName>
+  <SellerName>ABC Pty Ltd</SellerName>
+  <SellerAddress>1 Seller St, Melbourne VIC</SellerAddress>
+  <BuyerName>XYZ Pty Ltd</BuyerName>
+  <BuyerAddress>2 Buyer Rd, Sydney NSW</BuyerAddress>
   <Subtotal>100.0</Subtotal>
   <GrandTotal>110.0</GrandTotal>
   <LineItems>
     <LineItem>
+      <ItemNumber>1</ItemNumber>
       <Description>Consulting</Description>
       <Quantity>2</Quantity>
       <UnitPrice>50.0</UnitPrice>
@@ -117,7 +129,10 @@ def make_sample_pdf() -> bytes:
     elements.append(Spacer(1, 5 * mm))
     details = [
         ["Invoice Number:", "INV-001"],
-        ["Client Name:", "XYZ Pty Ltd"],
+        ["Seller Name:", "ABC Pty Ltd"],
+        ["Seller Address:", "1 Seller St, Melbourne VIC"],
+        ["Buyer Name:", "XYZ Pty Ltd"],
+        ["Buyer Address:", "2 Buyer Rd, Sydney NSW"],
         ["Currency:", "AUD"],
         ["Due Date:", "2026-03-16"],
     ]
@@ -172,7 +187,7 @@ def test_parse_json_invalid():
 # -------------------------------------------------------
 def test_parse_csv_valid():
     result = parse_csv(SAMPLE_CSV)
-    assert result["client_name"] == "XYZ Pty Ltd"
+    assert result["buyer_name"] == "XYZ Pty Ltd"
     assert result["currency"] == "AUD"
 
 def test_parse_csv_empty():
@@ -181,7 +196,7 @@ def test_parse_csv_empty():
 
 def test_parse_csv_missing_required_field():
     bad_csv = "invoice_number,currency\nINV-001,AUD"
-    with pytest.raises(ValueError, match="Missing required CSV field"):
+    with pytest.raises(ValueError, match="due_date|issue_date|Missing required CSV field"):
         parse_csv(bad_csv)
 
 
@@ -192,8 +207,8 @@ def test_parse_ubl_xml_valid():
     result = parse_ubl_xml(SAMPLE_UBL_XML)
     assert result["invoice_number"] == "INV-001"
     assert result["currency"] == "AUD"
-    assert result["client_name"] == "XYZ Pty Ltd"
-    assert result["supplier_name"] == "ABC Pty Ltd"
+    assert result["buyer_name"] == "XYZ Pty Ltd"
+    assert result["seller_name"] == "ABC Pty Ltd"
     assert len(result["items"]) == 1
 
 def test_parse_ubl_xml_invalid():
@@ -207,7 +222,7 @@ def test_parse_ubl_xml_invalid():
 def test_parse_generic_xml_valid():
     result = parse_generic_xml(SAMPLE_GENERIC_XML)
     assert result["invoice_number"] == "INV-001"
-    assert result["client_name"] == "XYZ Pty Ltd"
+    assert result["buyer_name"] == "XYZ Pty Ltd"
     assert result["currency"] == "AUD"
     assert len(result["items"]) == 1
 
@@ -237,7 +252,7 @@ def test_dict_to_ubl_xml_is_string():
 def test_dict_to_generic_xml_contains_required_tags():
     result = dict_to_generic_xml(SAMPLE_DICT)
     assert "<InvoiceNumber>INV-001</InvoiceNumber>" in result
-    assert "<ClientName>XYZ Pty Ltd</ClientName>" in result
+    assert "<BuyerName>XYZ Pty Ltd</BuyerName>" in result
     assert "Consulting" in result
 
 def test_dict_to_generic_xml_is_string():
@@ -264,7 +279,7 @@ def test_dict_to_json_is_string():
 def test_dict_to_csv_contains_headers():
     result = dict_to_csv(SAMPLE_DICT)
     assert "invoice_number" in result
-    assert "client_name" in result
+    assert "buyer_name" in result
 
 def test_dict_to_csv_contains_data():
     result = dict_to_csv(SAMPLE_DICT)

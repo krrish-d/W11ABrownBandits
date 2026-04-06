@@ -6,6 +6,7 @@ import LineItemRow from "../components/LineItemRow";
 
 const createLineItem = () => ({
   id: crypto.randomUUID(),
+  item_number: "",
   description: "",
   quantity: 1,
   unit_price: 0,
@@ -17,8 +18,10 @@ export default function CreateInvoice() {
   const navigate = useNavigate();
   const [form, setForm] = useState({
     sellerName: "",
+    sellerAddress: "",
     sellerEmail: "",
     buyerName: "",
+    buyerAddress: "",
     buyerEmail: "",
     dueDate: "",
     currency: "AUD",
@@ -56,8 +59,10 @@ export default function CreateInvoice() {
   const validate = () => {
     const nextErrors = {};
     if (!form.sellerName.trim()) nextErrors.sellerName = "Required";
+    if (!form.sellerAddress.trim()) nextErrors.sellerAddress = "Required";
     if (!form.sellerEmail.trim()) nextErrors.sellerEmail = "Required";
     if (!form.buyerName.trim()) nextErrors.buyerName = "Required";
+    if (!form.buyerAddress.trim()) nextErrors.buyerAddress = "Required";
     if (!form.buyerEmail.trim()) nextErrors.buyerEmail = "Required";
     if (!form.dueDate) nextErrors.dueDate = "Required";
     setErrors(nextErrors);
@@ -92,12 +97,17 @@ export default function CreateInvoice() {
       setOutput("");
 
       const payload = {
-        client_name: form.buyerName,
-        client_email: form.buyerEmail,
+        seller_name: form.sellerName,
+        seller_address: form.sellerAddress,
+        seller_email: form.sellerEmail,
+        buyer_name: form.buyerName,
+        buyer_address: form.buyerAddress,
+        buyer_email: form.buyerEmail,
         due_date: form.dueDate,
         currency: form.currency,
-        notes: `Seller: ${form.sellerName} (${form.sellerEmail})`,
-        items: form.lineItems.map((item) => ({
+        notes: "",
+        items: form.lineItems.map((item, index) => ({
+          item_number: item.item_number || String(index + 1),
           description: item.description || "Line Item",
           quantity: Number(item.quantity || 1),
           unit_price: Number(item.unit_price || 0),
@@ -132,6 +142,11 @@ export default function CreateInvoice() {
             {errors.sellerEmail ? <small className="error-text">{errors.sellerEmail}</small> : null}
           </div>
           <div>
+            <label>Seller Address</label>
+            <input value={form.sellerAddress} onChange={(e) => updateField("sellerAddress", e.target.value)} />
+            {errors.sellerAddress ? <small className="error-text">{errors.sellerAddress}</small> : null}
+          </div>
+          <div>
             <label>Buyer Name</label>
             <input value={form.buyerName} onChange={(e) => updateField("buyerName", e.target.value)} />
             {errors.buyerName ? <small className="error-text">{errors.buyerName}</small> : null}
@@ -140,6 +155,11 @@ export default function CreateInvoice() {
             <label>Buyer Email</label>
             <input type="email" value={form.buyerEmail} onChange={(e) => updateField("buyerEmail", e.target.value)} />
             {errors.buyerEmail ? <small className="error-text">{errors.buyerEmail}</small> : null}
+          </div>
+          <div>
+            <label>Buyer Address</label>
+            <input value={form.buyerAddress} onChange={(e) => updateField("buyerAddress", e.target.value)} />
+            {errors.buyerAddress ? <small className="error-text">{errors.buyerAddress}</small> : null}
           </div>
           <div>
             <label>Due Date</label>
