@@ -8,6 +8,12 @@ def make_invoice():
     inv.invoice_id = "test-id-123"
     inv.invoice_number = "INV-TESTABCD"
     inv.status = "draft"
+    inv.seller_name = "Test Seller"
+    inv.seller_address = "1 Seller St"
+    inv.seller_email = "seller@example.com"
+    inv.buyer_name = "Test Client"
+    inv.buyer_address = "2 Buyer Rd"
+    inv.buyer_email = "test@example.com"
     inv.client_name = "Test Client"
     inv.client_email = "test@example.com"
     inv.currency = "AUD"
@@ -21,6 +27,7 @@ def make_invoice():
 def make_item():
     item = MagicMock()
     item.item_id = "item-id-456"
+    item.item_number = "1"
     item.description = "Laptop"
     item.quantity = 2.0
     item.unit_price = 500.0

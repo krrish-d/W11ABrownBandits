@@ -1,9 +1,12 @@
 from fastapi import FastAPI
-from app.routers import invoice, transform, validate
-from app.database import Base, engine
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.routers import communicate, invoice, transform, validate
+from app.database import Base, engine, ensure_schema_compatibility
 
 # Create database tables automatically on startup
 Base.metadata.create_all(bind=engine)
+ensure_schema_compatibility()
 
 app = FastAPI(
     title="E-Invoice API",
@@ -11,18 +14,27 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Connect routers
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(invoice.router)
+app.include_router(invoice.legacy_router)
 app.include_router(transform.router)
 app.include_router(validate.router)
+app.include_router(communicate.router)
+
+app.include_router(invoice.router, prefix="/v2")
+app.include_router(transform.router, prefix="/v2")
+app.include_router(validate.router, prefix="/v2")
+app.include_router(communicate.router, prefix="/v2")
 
 @app.get("/health")
 def health_check():
-    return {
-        "status": "healthy",
-        "service": "E-Invoice API",
-        "version": "1.0.0"
-    }
+    return {"status": "healthy"}
 
 @app.get("/")
 def root():

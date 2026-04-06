@@ -12,8 +12,13 @@ from app.models.invoice import Invoice, LineItem
 from app.schemas.invoice import InvoiceCreate, InvoiceResponse, InvoiceUpdate
 
 router = APIRouter(
-    prefix="/invoices",
+    prefix="/invoice",
     tags=["Invoice Creation"]
+)
+
+legacy_router = APIRouter(
+    prefix="/invoices",
+    tags=["Invoice Creation (Legacy)"]
 )
 
 
@@ -37,12 +42,16 @@ def generate_ubl_xml(invoice: Invoice, items: list) -> str:
     supplier = etree.SubElement(root, f"{{{cac}}}AccountingSupplierParty")
     supplier_party = etree.SubElement(supplier, f"{{{cac}}}Party")
     supplier_name_el = etree.SubElement(supplier_party, f"{{{cac}}}PartyName")
-    etree.SubElement(supplier_name_el, f"{{{cbc}}}Name").text = "Supplier"
+    etree.SubElement(supplier_name_el, f"{{{cbc}}}Name").text = invoice.seller_name
+    supplier_address = etree.SubElement(supplier_party, f"{{{cac}}}PostalAddress")
+    etree.SubElement(supplier_address, f"{{{cbc}}}StreetName").text = invoice.seller_address
 
     customer = etree.SubElement(root, f"{{{cac}}}AccountingCustomerParty")
     customer_party = etree.SubElement(customer, f"{{{cac}}}Party")
     customer_name_el = etree.SubElement(customer_party, f"{{{cac}}}PartyName")
-    etree.SubElement(customer_name_el, f"{{{cbc}}}Name").text = invoice.client_name
+    etree.SubElement(customer_name_el, f"{{{cbc}}}Name").text = invoice.buyer_name
+    customer_address = etree.SubElement(customer_party, f"{{{cac}}}PostalAddress")
+    etree.SubElement(customer_address, f"{{{cbc}}}StreetName").text = invoice.buyer_address
 
     monetary_total = etree.SubElement(root, f"{{{cac}}}LegalMonetaryTotal")
     etree.SubElement(monetary_total, f"{{{cbc}}}LineExtensionAmount", currencyID=invoice.currency).text = str(invoice.subtotal)
@@ -51,7 +60,7 @@ def generate_ubl_xml(invoice: Invoice, items: list) -> str:
 
     for item in items:
         line = etree.SubElement(root, f"{{{cac}}}InvoiceLine")
-        etree.SubElement(line, f"{{{cbc}}}ID").text = item.item_id
+        etree.SubElement(line, f"{{{cbc}}}ID").text = item.item_number
         etree.SubElement(line, f"{{{cbc}}}InvoicedQuantity", unitCode="EA").text = str(item.quantity)
         etree.SubElement(line, f"{{{cbc}}}LineExtensionAmount", currencyID=invoice.currency).text = str(item.line_total)
         item_el = etree.SubElement(line, f"{{{cac}}}Item")
@@ -68,8 +77,12 @@ def generate_generic_xml(invoice: Invoice, items: list) -> str:
     etree.SubElement(root, "InvoiceID").text = invoice.invoice_id
     etree.SubElement(root, "InvoiceNumber").text = invoice.invoice_number
     etree.SubElement(root, "Status").text = invoice.status
-    etree.SubElement(root, "ClientName").text = invoice.client_name
-    etree.SubElement(root, "ClientEmail").text = invoice.client_email
+    etree.SubElement(root, "SellerName").text = invoice.seller_name
+    etree.SubElement(root, "SellerAddress").text = invoice.seller_address
+    etree.SubElement(root, "SellerEmail").text = invoice.seller_email
+    etree.SubElement(root, "BuyerName").text = invoice.buyer_name
+    etree.SubElement(root, "BuyerAddress").text = invoice.buyer_address
+    etree.SubElement(root, "BuyerEmail").text = invoice.buyer_email
     etree.SubElement(root, "Currency").text = invoice.currency
     etree.SubElement(root, "DueDate").text = str(invoice.due_date)
     etree.SubElement(root, "Subtotal").text = str(invoice.subtotal)
@@ -79,6 +92,7 @@ def generate_generic_xml(invoice: Invoice, items: list) -> str:
     items_el = etree.SubElement(root, "LineItems")
     for item in items:
         item_el = etree.SubElement(items_el, "LineItem")
+        etree.SubElement(item_el, "ItemNumber").text = item.item_number
         etree.SubElement(item_el, "Description").text = item.description
         etree.SubElement(item_el, "Quantity").text = str(item.quantity)
         etree.SubElement(item_el, "UnitPrice").text = str(item.unit_price)
@@ -92,20 +106,22 @@ def generate_csv(invoice: Invoice, items: list) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
 
-    writer.writerow(["Invoice ID", "Invoice Number", "Status", "Client Name",
-                     "Client Email", "Currency", "Due Date",
+    writer.writerow(["Invoice ID", "Invoice Number", "Status", "Seller Name",
+                     "Seller Address", "Seller Email", "Buyer Name", "Buyer Address",
+                     "Buyer Email", "Currency", "Due Date",
                      "Subtotal", "Tax Total", "Grand Total"])
     writer.writerow([
         invoice.invoice_id, invoice.invoice_number, invoice.status,
-        invoice.client_name, invoice.client_email, invoice.currency,
+        invoice.seller_name, invoice.seller_address, invoice.seller_email,
+        invoice.buyer_name, invoice.buyer_address, invoice.buyer_email, invoice.currency,
         str(invoice.due_date), invoice.subtotal, invoice.tax_total, invoice.grand_total
     ])
 
     writer.writerow([])
-    writer.writerow(["Description", "Quantity", "Unit Price", "Tax Rate (%)", "Line Total"])
+    writer.writerow(["Item Number", "Description", "Quantity", "Unit Price", "Tax Rate (%)", "Line Total"])
     for item in items:
         writer.writerow([
-            item.description, item.quantity, item.unit_price,
+            item.item_number, item.description, item.quantity, item.unit_price,
             item.tax_rate, item.line_total
         ])
 
@@ -136,8 +152,12 @@ def generate_pdf(invoice: Invoice, items: list) -> bytes:
     details = [
         ["Invoice Number:", invoice.invoice_number],
         ["Invoice ID:", invoice.invoice_id],
-        ["Client Name:", invoice.client_name],
-        ["Client Email:", invoice.client_email],
+        ["Seller Name:", invoice.seller_name],
+        ["Seller Address:", invoice.seller_address],
+        ["Seller Email:", invoice.seller_email],
+        ["Buyer Name:", invoice.buyer_name],
+        ["Buyer Address:", invoice.buyer_address],
+        ["Buyer Email:", invoice.buyer_email],
         ["Currency:", invoice.currency],
         ["Due Date:", str(invoice.due_date)],
         ["Status:", invoice.status],
@@ -153,9 +173,10 @@ def generate_pdf(invoice: Invoice, items: list) -> bytes:
     elements.append(Spacer(1, 8 * mm))
 
     elements.append(Paragraph("Line Items", styles["Heading2"]))
-    item_data = [["Description", "Quantity", "Unit Price", "Tax Rate", "Line Total"]]
+    item_data = [["Item #", "Description", "Quantity", "Unit Price", "Tax Rate", "Line Total"]]
     for item in items:
         item_data.append([
+            item.item_number,
             item.description,
             str(item.quantity),
             f"{invoice.currency} {item.unit_price:.2f}",
@@ -163,7 +184,7 @@ def generate_pdf(invoice: Invoice, items: list) -> bytes:
             f"{invoice.currency} {item.line_total:.2f}"
         ])
 
-    item_table = Table(item_data, colWidths=[70 * mm, 25 * mm, 35 * mm, 25 * mm, 35 * mm])
+    item_table = Table(item_data, colWidths=[20 * mm, 50 * mm, 20 * mm, 30 * mm, 20 * mm, 30 * mm])
     item_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
@@ -195,7 +216,7 @@ def generate_pdf(invoice: Invoice, items: list) -> bytes:
     return buffer.getvalue()
 
 
-@router.post("/", response_model=InvoiceResponse, status_code=201)
+@router.post("/create", response_model=InvoiceResponse, status_code=201)
 def create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
     invoice_number = f"INV-{str(uuid.uuid4())[:8].upper()}"
 
@@ -209,6 +230,7 @@ def create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
         subtotal += line_total
         tax_total += tax_amount
         line_items_data.append({
+            "item_number": item.item_number,
             "description": item.description,
             "quantity": item.quantity,
             "unit_price": item.unit_price,
@@ -222,8 +244,15 @@ def create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
 
     new_invoice = Invoice(
         invoice_number=invoice_number,
-        client_name=invoice_data.client_name,
-        client_email=invoice_data.client_email,
+        seller_name=invoice_data.seller_name,
+        seller_address=invoice_data.seller_address,
+        seller_email=invoice_data.seller_email,
+        buyer_name=invoice_data.buyer_name,
+        buyer_address=invoice_data.buyer_address,
+        buyer_email=invoice_data.buyer_email,
+        # Kept for backward compatibility in existing UI pages.
+        client_name=invoice_data.buyer_name,
+        client_email=invoice_data.buyer_email,
         currency=invoice_data.currency,
         due_date=invoice_data.due_date,
         notes=invoice_data.notes,
@@ -243,12 +272,12 @@ def create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
     return new_invoice
 
 
-@router.get("/", response_model=list[InvoiceResponse])
+@router.get("/list", response_model=list[InvoiceResponse])
 def list_invoices(db: Session = Depends(get_db)):
     return db.query(Invoice).all()
 
 
-@router.get("/{invoice_id}")
+@router.get("/fetch/{invoice_id}")
 def get_invoice(
     invoice_id: str,
     format: str = Query(
@@ -288,24 +317,37 @@ def get_invoice(
         )
 
     else:
+        if format != "json":
+            raise HTTPException(status_code=400, detail="Unsupported format. Use one of: json, ubl, xml, csv, pdf")
         return InvoiceResponse.model_validate(invoice)
 
 
-@router.put("/{invoice_id}", response_model=InvoiceResponse)
+@router.put("/update/{invoice_id}", response_model=InvoiceResponse)
 def update_invoice(invoice_id: str, updates: InvoiceUpdate, db: Session = Depends(get_db)):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    for field, value in updates.model_dump(exclude_unset=True).items():
+    update_data = updates.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
         setattr(invoice, field, value)
+
+    # Keep legacy client_* fields aligned with buyer_* values.
+    if "buyer_name" in update_data:
+        invoice.client_name = invoice.buyer_name
+    if "buyer_email" in update_data:
+        invoice.client_email = invoice.buyer_email
+    if "client_name" in update_data:
+        invoice.buyer_name = invoice.client_name
+    if "client_email" in update_data:
+        invoice.buyer_email = invoice.client_email
 
     db.commit()
     db.refresh(invoice)
     return invoice
 
 
-@router.delete("/{invoice_id}", status_code=200)
+@router.delete("/delete/{invoice_id}", status_code=200)
 def delete_invoice(invoice_id: str, db: Session = Depends(get_db)):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
     if not invoice:
@@ -314,3 +356,36 @@ def delete_invoice(invoice_id: str, db: Session = Depends(get_db)):
     db.delete(invoice)
     db.commit()
     return {"message": f"Invoice {invoice_id} deleted successfully"}
+
+
+# Legacy Sprint 1 routes kept accessible in parallel
+@legacy_router.post("/", response_model=InvoiceResponse, status_code=201)
+def legacy_create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
+    return create_invoice(invoice_data, db)
+
+
+@legacy_router.get("/", response_model=list[InvoiceResponse])
+def legacy_list_invoices(db: Session = Depends(get_db)):
+    return list_invoices(db)
+
+
+@legacy_router.get("/{invoice_id}")
+def legacy_get_invoice(
+    invoice_id: str,
+    format: str = Query(
+        default="json",
+        description="Output format: json, ubl, xml, csv, pdf"
+    ),
+    db: Session = Depends(get_db)
+):
+    return get_invoice(invoice_id, format, db)
+
+
+@legacy_router.put("/{invoice_id}", response_model=InvoiceResponse)
+def legacy_update_invoice(invoice_id: str, updates: InvoiceUpdate, db: Session = Depends(get_db)):
+    return update_invoice(invoice_id, updates, db)
+
+
+@legacy_router.delete("/{invoice_id}", status_code=200)
+def legacy_delete_invoice(invoice_id: str, db: Session = Depends(get_db)):
+    return delete_invoice(invoice_id, db)
