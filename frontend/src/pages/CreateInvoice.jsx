@@ -4,7 +4,13 @@ import toast from "react-hot-toast";
 import client, { createBlobUrl, formatApiError } from "../api/client";
 import LineItemRow from "../components/LineItemRow";
 
-const emptyLine = { description: "", quantity: 1, unit_price: 0, tax_rate: 10 };
+const createLineItem = () => ({
+  id: crypto.randomUUID(),
+  description: "",
+  quantity: 1,
+  unit_price: 0,
+  tax_rate: 10,
+});
 const formatMap = { ubl_xml: "ubl", generic_xml: "xml", json: "json", csv: "csv", pdf: "pdf" };
 
 export default function CreateInvoice() {
@@ -17,7 +23,7 @@ export default function CreateInvoice() {
     dueDate: "",
     currency: "AUD",
     outputFormat: "ubl_xml",
-    lineItems: [{ ...emptyLine }],
+    lineItems: [createLineItem()],
   });
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
@@ -43,7 +49,7 @@ export default function CreateInvoice() {
     });
   };
 
-  const addLine = () => setForm((prev) => ({ ...prev, lineItems: [...prev.lineItems, { ...emptyLine }] }));
+  const addLine = () => setForm((prev) => ({ ...prev, lineItems: [...prev.lineItems, createLineItem()] }));
   const removeLine = (index) =>
     setForm((prev) => ({ ...prev, lineItems: prev.lineItems.filter((_, i) => i !== index) }));
 
@@ -166,7 +172,7 @@ export default function CreateInvoice() {
           <h4>Line Items</h4>
           {form.lineItems.map((item, index) => (
             <LineItemRow
-              key={`${index}-${item.description}`}
+              key={item.id}
               item={item}
               index={index}
               onChange={updateLine}

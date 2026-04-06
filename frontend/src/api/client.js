@@ -9,6 +9,26 @@ const client = axios.create({
   },
 });
 
+client.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const res = error.response;
+    const data = res?.data;
+    if (res?.status >= 400 && data instanceof Blob) {
+      try {
+        const text = await data.text();
+        const trimmed = text.trim();
+        if (trimmed.startsWith("{")) {
+          res.data = JSON.parse(trimmed);
+        }
+      } catch {
+        /* keep blob */
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 export function formatApiError(error) {
   return (
     error?.response?.data?.detail ||

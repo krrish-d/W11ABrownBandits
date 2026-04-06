@@ -107,10 +107,17 @@ def parse_generic_xml(xml_string: str) -> dict:
 # HELPER: Parse JSON string into a plain dict
 # -------------------------------------------------------
 def parse_json(json_string: str) -> dict:
+    s = json_string.strip()
     try:
-        return json.loads(json_string)
+        data = json.loads(s)
+        # Paste from some UIs wraps JSON as a JSON-encoded string (double-encoded)
+        if isinstance(data, str):
+            data = json.loads(data)
+        if not isinstance(data, dict):
+            raise ValueError("JSON must be an object ({ ... }), not an array or primitive")
+        return data
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON: {e}")
+        raise ValueError(f"Invalid JSON: {e}") from e
 
 
 # -------------------------------------------------------
@@ -124,9 +131,17 @@ def parse_csv(csv_string: str) -> dict:
 
     row = rows[0]
 
-    required = ["client_name", "currency", "due_date"]
-    for field in required:
-        if field not in row or not row[field]:
+    # dict_to_csv exports "issue_date"; older samples may use "due_date" — accept both
+    date_col = None
+    if row.get("due_date"):
+        date_col = "due_date"
+    elif row.get("issue_date"):
+        date_col = "issue_date"
+    if not date_col:
+        raise ValueError("CSV must include 'due_date' or 'issue_date' (and values)")
+
+    for field in ["client_name", "currency"]:
+        if field not in row or not str(row[field]).strip():
             raise ValueError(f"Missing required CSV field: {field}")
 
     items = []
@@ -139,11 +154,13 @@ def parse_csv(csv_string: str) -> dict:
                 "line_total": r.get("line_total"),
             })
 
+    issue = (row.get("due_date") or row.get("issue_date") or "").strip()
+
     return {
         "invoice_number": row.get("invoice_number"),
-        "currency": row["currency"],
-        "client_name": row["client_name"],
-        "issue_date": row.get("due_date"),
+        "currency": row["currency"].strip() if row["currency"] else "",
+        "client_name": row["client_name"].strip() if row["client_name"] else "",
+        "issue_date": issue,
         "items": items
     }
 
