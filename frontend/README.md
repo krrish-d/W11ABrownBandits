@@ -42,7 +42,7 @@ This app is a static Vite build. The FastAPI backend should run elsewhere (Railw
 ## Known Gaps (Intentional POC/unfinished)
 
 - UI is intentionally simple and not fully polished.
-- Mobile responsiveness is basic, not deeply optimized.
+- Mobile responsiveness is basic, not deeply optimised.
 - Send flow depends on backend routes (`/send` or `/communicate/send`) that may not exist yet.
 - Seller vs buyer data model is adapted in frontend to fit current backend schema (`client_name`, `client_email`).
-- Advanced edge-case handling is limited; happy path is prioritized.
+- Advanced edge-case handling is limited; happy path is prioritised.

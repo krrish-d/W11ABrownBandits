@@ -130,7 +130,7 @@ def parse_json(json_string: str) -> dict:
             data = json.loads(data)
         if not isinstance(data, dict):
             raise ValueError("JSON must be an object ({ ... }), not an array or primitive")
-        return data
+        return normalize_invoice_data(data)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON: {e}") from e
 
@@ -139,49 +139,93 @@ def parse_json(json_string: str) -> dict:
 # HELPER: Parse CSV string into a plain dict
 # -------------------------------------------------------
 def parse_csv(csv_string: str) -> dict:
-    reader = csv.DictReader(io.StringIO(csv_string))
-    rows = list(reader)
-    if not rows:
+    rows_raw = list(csv.reader(io.StringIO(csv_string)))
+    if not rows_raw:
+        raise ValueError("CSV is empty or missing headers")
+    normalized_rows = [[(cell or "").strip() for cell in row] for row in rows_raw]
+    non_empty_rows = [row for row in normalized_rows if any(cell for cell in row)]
+    if not non_empty_rows:
         raise ValueError("CSV is empty or missing headers")
 
-    row = rows[0]
+    def norm_header(value: str) -> str:
+        return value.strip().lower().replace(" ", "_").replace("(%)", "").replace("%", "")
 
-    # dict_to_csv exports "issue_date"; older samples may use "due_date" — accept both
-    date_col = None
-    if row.get("due_date"):
-        date_col = "due_date"
-    elif row.get("issue_date"):
-        date_col = "issue_date"
-    if not date_col:
-        raise ValueError("CSV must include 'due_date' or 'issue_date' (and values)")
+    header = [norm_header(h) for h in non_empty_rows[0]]
 
-    for field in ["buyer_name", "seller_name", "buyer_address", "seller_address", "currency"]:
-        if field not in row or not str(row[field]).strip():
-            raise ValueError(f"Missing required CSV field: {field}")
+    # Single-table CSV (legacy/tests): all invoice + item columns on one row.
+    if "description" in header and "buyer_name" in header:
+        reader = csv.DictReader(io.StringIO(csv_string))
+        rows = list(reader)
+        row = rows[0] if rows else {}
+        items = []
+        for r in rows:
+            if r.get("description"):
+                items.append({
+                    "item_number": r.get("item_number"),
+                    "description": r.get("description"),
+                    "quantity": r.get("quantity"),
+                    "unit_price": r.get("unit_price"),
+                    "line_total": r.get("line_total"),
+                })
+        parsed = normalize_invoice_data({
+            "invoice_number": row.get("invoice_number"),
+            "currency": row.get("currency"),
+            "seller_name": row.get("seller_name"),
+            "seller_address": row.get("seller_address"),
+            "buyer_name": row.get("buyer_name"),
+            "buyer_address": row.get("buyer_address"),
+            "issue_date": row.get("issue_date") or row.get("due_date"),
+            "subtotal": row.get("subtotal"),
+            "grand_total": row.get("grand_total"),
+            "items": items,
+        })
+        _validate_csv_required_fields(parsed)
+        return parsed
+
+    # Two-section CSV (current generators): first section invoice details, second section line items.
+    if len(non_empty_rows) < 2:
+        raise ValueError("CSV is missing invoice data row")
+
+    invoice_headers = [norm_header(h) for h in non_empty_rows[0]]
+    invoice_values = non_empty_rows[1]
+    invoice_data = {invoice_headers[i]: (invoice_values[i] if i < len(invoice_values) else "") for i in range(len(invoice_headers))}
+
+    item_header_idx = None
+    for idx in range(2, len(non_empty_rows)):
+        hdr = [norm_header(h) for h in non_empty_rows[idx]]
+        if "description" in hdr and ("item_number" in hdr or "item_#" in hdr):
+            item_header_idx = idx
+            break
 
     items = []
-    for r in rows:
-        if r.get("description"):
-            items.append({
-                "item_number": r.get("item_number"),
-                "description": r.get("description"),
-                "quantity": r.get("quantity"),
-                "unit_price": r.get("unit_price"),
-                "line_total": r.get("line_total"),
-            })
+    if item_header_idx is not None:
+        item_headers = [norm_header(h).replace("item_#", "item_number").replace("tax_rate_", "tax_rate") for h in non_empty_rows[item_header_idx]]
+        for idx in range(item_header_idx + 1, len(non_empty_rows)):
+            values = non_empty_rows[idx]
+            row = {item_headers[i]: (values[i] if i < len(values) else "") for i in range(len(item_headers))}
+            if row.get("description"):
+                items.append({
+                    "item_number": row.get("item_number"),
+                    "description": row.get("description"),
+                    "quantity": row.get("quantity"),
+                    "unit_price": row.get("unit_price"),
+                    "line_total": row.get("line_total"),
+                })
 
-    issue = (row.get("due_date") or row.get("issue_date") or "").strip()
-
-    return {
-        "invoice_number": row.get("invoice_number"),
-        "currency": row["currency"].strip() if row["currency"] else "",
-        "seller_name": row["seller_name"].strip() if row["seller_name"] else "",
-        "seller_address": row["seller_address"].strip() if row["seller_address"] else "",
-        "buyer_name": row["buyer_name"].strip() if row["buyer_name"] else "",
-        "buyer_address": row["buyer_address"].strip() if row["buyer_address"] else "",
-        "issue_date": issue,
-        "items": items
-    }
+    parsed = normalize_invoice_data({
+        "invoice_number": invoice_data.get("invoice_number"),
+        "currency": invoice_data.get("currency"),
+        "seller_name": invoice_data.get("seller_name"),
+        "seller_address": invoice_data.get("seller_address"),
+        "buyer_name": invoice_data.get("buyer_name"),
+        "buyer_address": invoice_data.get("buyer_address"),
+        "issue_date": invoice_data.get("issue_date") or invoice_data.get("due_date"),
+        "subtotal": invoice_data.get("subtotal"),
+        "grand_total": invoice_data.get("grand_total"),
+        "items": items,
+    })
+    _validate_csv_required_fields(parsed)
+    return parsed
 
 
 # -------------------------------------------------------
@@ -270,6 +314,66 @@ def _require_non_empty(data: dict, field: str, label: str):
     value = data.get(field)
     if value is None or str(value).strip() == "":
         raise ValueError(f"Missing required field: {label}")
+
+
+def _to_float(value, default: float = 0.0) -> float:
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _validate_csv_required_fields(data: dict):
+    if not str(data.get("issue_date") or "").strip():
+        raise ValueError("CSV must include 'due_date' or 'issue_date' (and values)")
+    for field in ["buyer_name", "seller_name", "buyer_address", "seller_address", "currency"]:
+        if not str(data.get(field) or "").strip():
+            raise ValueError(f"Missing required CSV field: {field}")
+
+
+def normalize_invoice_data(data: dict) -> dict:
+    seller = data.get("seller_details") if isinstance(data.get("seller_details"), dict) else {}
+    buyer = data.get("buyer_details") if isinstance(data.get("buyer_details"), dict) else {}
+
+    items = []
+    for idx, item in enumerate(data.get("items") or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        qty = _to_float(item.get("quantity"), 0.0)
+        unit_price = _to_float(item.get("unit_price"), 0.0)
+        line_total = item.get("line_total")
+        if line_total is None or str(line_total).strip() == "":
+            line_total = round(qty * unit_price, 2)
+        items.append({
+            "item_number": item.get("item_number") or str(idx),
+            "description": item.get("description", ""),
+            "quantity": item.get("quantity"),
+            "unit_price": item.get("unit_price"),
+            "line_total": line_total,
+        })
+
+    subtotal = data.get("subtotal")
+    if subtotal is None and items:
+        subtotal = round(sum(_to_float(item.get("line_total"), 0.0) for item in items), 2)
+
+    grand_total = data.get("grand_total")
+    if grand_total is None:
+        grand_total = subtotal
+
+    return {
+        "invoice_number": data.get("invoice_number") or data.get("invoice_id") or data.get("id"),
+        "issue_date": data.get("issue_date") or data.get("due_date"),
+        "currency": data.get("currency"),
+        "seller_name": data.get("seller_name") or seller.get("seller_name") or seller.get("name"),
+        "seller_address": data.get("seller_address") or seller.get("seller_address") or seller.get("address"),
+        "buyer_name": data.get("buyer_name") or data.get("client_name") or buyer.get("buyer_name") or buyer.get("name"),
+        "buyer_address": data.get("buyer_address") or buyer.get("buyer_address") or buyer.get("address"),
+        "subtotal": subtotal,
+        "grand_total": grand_total,
+        "items": items,
+    }
 
 
 def validate_required_fields(data: dict):
