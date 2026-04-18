@@ -11,8 +11,9 @@ class ValidationRequest(BaseModel):
     ruleset: str = "ubl"
 
 
-class BulkValidateBody(BaseModel):
+class BulkValidationRequest(BaseModel):
     invoices: list[str]
+    ruleset: str = "ubl"
 
 
 @router.post("/validate")
@@ -44,6 +45,18 @@ def get_supported_rulesets():
 
 
 @router.post("/validate/bulk")
-def validate_bulk(_body: BulkValidateBody):
-    """Deferred to a later sprint — route reserved for API contract."""
-    raise HTTPException(status_code=501, detail="Bulk validation is not implemented yet")
+def validate_bulk(request: BulkValidationRequest):
+    """
+    Validate multiple UBL 2.1 XML invoices in a single request.
+
+    Supported rulesets: ubl (default), peppol, australian
+    """
+    try:
+        results = [
+            {"index": i, **validate(xml, request.ruleset)}
+            for i, xml in enumerate(request.invoices)
+        ]
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return {"results": results}
