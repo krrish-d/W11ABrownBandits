@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.routers import invoice, transform, validate
+from app.routers import communicate, invoice, transform, validate
 from app.database import Base, engine
 
 # Create database tables automatically on startup
@@ -15,6 +15,7 @@ app = FastAPI(
 app.include_router(invoice.router)
 app.include_router(transform.router)
 app.include_router(validate.router)
+app.include_router(communicate.router)
 
 @app.get("/health")
 def health_check():
