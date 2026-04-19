@@ -21,6 +21,7 @@ export type Invoice = {
   client_name: string;
   client_email: string;
   currency: string;
+  issue_date?: string | null;
   due_date: string;
   notes?: string | null;
   subtotal: number;
@@ -165,4 +166,26 @@ export type DashboardTopClients = {
     outstanding: number;
     invoice_count: number;
   }>;
+};
+
+export type RecurringRule = {
+  recurring_id: string;
+  owner_id?: string | null;
+  name: string;
+  frequency: "daily" | "weekly" | "biweekly" | "monthly" | "quarterly" | "annually";
+  next_run_date: string;
+  end_date?: string | null;
+  is_active: boolean;
+  last_run_date?: string | null;
+  created_at: string;
+};
+
+export type AuditLog = {
+  audit_id: string;
+  entity_type: string;
+  entity_id: string;
+  action: string;
+  changed_by?: string | null;
+  changes?: string | null;
+  timestamp: string;
 };

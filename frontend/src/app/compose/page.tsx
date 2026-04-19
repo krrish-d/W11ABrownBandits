@@ -2,16 +2,17 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { useFieldArray, useForm } from "react-hook-form";
+import { useFieldArray, useForm, useWatch } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
   createInvoice,
-  createClient,
   fetchClients,
   fetchInvoice,
   fetchTemplates,
   getApiError,
+  getStoredToken,
+  sendInvoiceWithImportLink,
   updateInvoice,
 } from "@/lib/api";
 import type { Client, Invoice, Template } from "@/lib/types";
@@ -36,6 +37,7 @@ const schema = z.object({
   buyer_address: z.string().min(4),
   buyer_email: z.string().email(),
   currency: z.enum(["AUD", "USD", "GBP", "EUR"]),
+  issue_date: z.string().optional(),
   due_date: z.string().min(1),
   notes: z.string().optional(),
   items: z.array(lineItemSchema).min(1),
@@ -48,6 +50,9 @@ export default function ComposePage() {
   const editId = params?.get("id");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [outputFormat, setOutputFormat] = useState("json");
+  const [lastInvoiceId, setLastInvoiceId] = useState("");
+  const [sendEmail, setSendEmail] = useState("");
   const [clients, setClients] = useState<Client[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [selectedClientId, setSelectedClientId] = useState("");
@@ -63,6 +68,7 @@ export default function ComposePage() {
       buyer_address: "",
       buyer_email: "",
       currency: "AUD",
+      issue_date: "",
       due_date: "",
       notes: "",
       items: [{ description: "", quantity: 1, unit_price: 0, tax_rate: 10 }],
@@ -92,6 +98,7 @@ export default function ComposePage() {
           buyer_address: invoice.buyer_address || "",
           buyer_email: invoice.buyer_email || invoice.client_email,
           currency: invoice.currency as FormValues["currency"],
+          issue_date: invoice.issue_date ?? "",
           due_date: invoice.due_date,
           notes: invoice.notes || "",
           items: invoice.items.map((i) => ({
@@ -106,9 +113,57 @@ export default function ComposePage() {
   }, [editId, form]);
 
   const watched = form.watch();
-  const total = useMemo(() => {
-    return watched.items.reduce((sum, item) => sum + item.quantity * item.unit_price * (1 + item.tax_rate / 100), 0);
-  }, [watched.items]);
+  const watchedItems = useWatch({ control: form.control, name: "items" }) || [];
+  const watchedCurrency = useWatch({ control: form.control, name: "currency" }) || "AUD";
+  const pricedItems = useMemo(() => {
+    return watchedItems.map((item) => {
+      const quantity = Number(item?.quantity || 0);
+      const unitPrice = Number(item?.unit_price || 0);
+      const taxRate = Number(item?.tax_rate || 0);
+      const lineSubtotal = quantity * unitPrice;
+      const taxAmount = lineSubtotal * (taxRate / 100);
+      const lineTotal = lineSubtotal + taxAmount;
+      return {
+        description: item?.description || "",
+        quantity,
+        unitPrice,
+        taxRate,
+        lineSubtotal,
+        taxAmount,
+        lineTotal,
+      };
+    });
+  }, [watchedItems]);
+
+  const subtotal = useMemo(() => {
+    return pricedItems.reduce((sum, item) => sum + item.lineSubtotal, 0);
+  }, [pricedItems]);
+
+  const taxTotal = useMemo(() => {
+    return pricedItems.reduce((sum, item) => sum + item.taxAmount, 0);
+  }, [pricedItems]);
+
+  const grandTotal = useMemo(() => {
+    return subtotal + taxTotal;
+  }, [subtotal, taxTotal]);
+
+  async function downloadInvoice(invoiceId: string, format: string) {
+    const token = getStoredToken();
+    const resp = await fetch(`/api/invoice/fetch/${invoiceId}?format=${format}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!resp.ok) throw new Error("Download failed.");
+    const blob = await resp.blob();
+    const ext = format === "ubl_xml" ? "xml" : format;
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = `invoice-${invoiceId}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(objectUrl);
+  }
 
   async function onSubmit(values: FormValues) {
     try {
@@ -123,13 +178,9 @@ export default function ComposePage() {
           buyer_address: values.buyer_address,
           buyer_email: values.buyer_email,
           currency: values.currency,
+          issue_date: values.issue_date || undefined,
           due_date: values.due_date,
           notes: values.notes,
-        });
-        setMessage("Invoice updated successfully.");
-      } else {
-        await createInvoice({
-          ...values,
           items: values.items.map((item, index) => ({
             item_number: String(index + 1),
             description: item.description,
@@ -138,15 +189,26 @@ export default function ComposePage() {
             tax_rate: item.tax_rate,
           })),
         });
-        if (selectedClientId === "__new__") {
-          await createClient({
-            name: values.buyer_name,
-            email: values.buyer_email,
-            address: values.buyer_address,
-            currency: values.currency,
-          });
+        setMessage("Invoice updated successfully.");
+      } else {
+        const created = await createInvoice({
+          ...values,
+          issue_date: values.issue_date || undefined,
+          items: values.items.map((item, index) => ({
+            item_number: String(index + 1),
+            description: item.description,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            tax_rate: item.tax_rate,
+          })),
+        });
+        setLastInvoiceId(created?.invoice_id || "");
+        if (outputFormat !== "json" && created?.invoice_id) {
+          await downloadInvoice(created.invoice_id, outputFormat);
+          setMessage(`Invoice created and downloaded as ${outputFormat.toUpperCase()}. You can now send it to the client below.`);
+        } else {
+          setMessage("Invoice created successfully. You can now send it to the client below.");
         }
-        setMessage("Invoice created successfully.");
         form.reset();
       }
     } catch (e) {
@@ -190,7 +252,6 @@ export default function ComposePage() {
                           {client.name} - {client.email}
                         </option>
                       ))}
-                      <option value="__new__">Use current buyer as new saved client on submit</option>
                     </select>
                   </div>
                   <div>
@@ -244,6 +305,10 @@ export default function ComposePage() {
                   <Input {...form.register("buyer_address")} />
                 </div>
                 <div>
+                  <label className="muted-text">Issue date</label>
+                  <Input type="date" {...form.register("issue_date")} />
+                </div>
+                <div>
                   <label className="muted-text">Due date</label>
                   <Input type="date" {...form.register("due_date")} />
                 </div>
@@ -264,13 +329,24 @@ export default function ComposePage() {
               </div>
 
               <div className="space-y-3">
+                <div className="hidden gap-2 px-1 text-xs font-medium text-muted-foreground md:grid md:grid-cols-6">
+                  <p>Description</p>
+                  <p>Quantity</p>
+                  <p>Unit Price</p>
+                  <p>Tax %</p>
+                  <p>Total</p>
+                  <p>Action</p>
+                </div>
                 {fields.map((field, index) => (
-                  <div key={field.id} className="grid gap-2 rounded-xl border border-border p-3 md:grid-cols-4">
+                  <div key={field.id} className="grid gap-2 rounded-xl border border-border p-3 md:grid-cols-6">
                     <Input placeholder="Description" {...form.register(`items.${index}.description`)} />
                     <Input type="number" step="1" {...form.register(`items.${index}.quantity`)} />
                     <Input type="number" step="0.01" {...form.register(`items.${index}.unit_price`)} />
-                    <div className="flex gap-2">
-                      <Input type="number" step="0.1" {...form.register(`items.${index}.tax_rate`)} />
+                    <Input type="number" step="0.1" {...form.register(`items.${index}.tax_rate`)} />
+                    <div className="flex items-center rounded-2xl border border-input bg-background px-3 text-sm">
+                      {watchedCurrency} {pricedItems[index]?.lineTotal.toFixed(2) || "0.00"}
+                    </div>
+                    <div className="flex items-center">
                       <Button type="button" variant="ghost" onClick={() => remove(index)} disabled={fields.length === 1}>
                         Remove
                       </Button>
@@ -279,15 +355,64 @@ export default function ComposePage() {
                 ))}
               </div>
 
-              <div className="flex gap-2">
+              <div className="flex flex-wrap items-end gap-2">
                 <Button type="button" variant="secondary" onClick={() => append({ description: "", quantity: 1, unit_price: 0, tax_rate: 10 })}>
                   Add Line
                 </Button>
+                {!editId ? (
+                  <div className="flex items-center gap-2">
+                    <label className="muted-text whitespace-nowrap">Download as</label>
+                    <select
+                      className="h-10 rounded-2xl border border-input bg-background px-3 text-sm"
+                      value={outputFormat}
+                      onChange={(e) => setOutputFormat(e.target.value)}
+                    >
+                      <option value="json">JSON</option>
+                      <option value="pdf">PDF</option>
+                      <option value="csv">CSV</option>
+                      <option value="xml">XML</option>
+                      <option value="ubl_xml">UBL XML</option>
+                    </select>
+                  </div>
+                ) : null}
                 <Button type="submit" disabled={loading}>
                   {loading ? "Saving..." : editId ? "Save changes" : "Create invoice"}
                 </Button>
               </div>
               {message ? <p className="muted-text">{message}</p> : null}
+
+              {/* Send to client — shown after a new invoice is created */}
+              {lastInvoiceId && !editId ? (
+                <div className="rounded-xl border border-border bg-background p-4 space-y-3">
+                  <p className="text-sm font-medium">Send to client</p>
+                  <div className="flex gap-2">
+                    <Input
+                      type="email"
+                      placeholder="Recipient email address"
+                      value={sendEmail}
+                      onChange={(e) => setSendEmail(e.target.value)}
+                    />
+                    <Button
+                      type="button"
+                      disabled={loading || !sendEmail}
+                      onClick={async () => {
+                        try {
+                          setLoading(true);
+                          await sendInvoiceWithImportLink(lastInvoiceId, sendEmail);
+                          setMessage(`Invoice email sent to ${sendEmail}.`);
+                          setSendEmail("");
+                        } catch (e) {
+                          setMessage(getApiError(e));
+                        } finally {
+                          setLoading(false);
+                        }
+                      }}
+                    >
+                      Send email
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
             </form>
           </CardContent>
         </Card>
@@ -296,17 +421,83 @@ export default function ComposePage() {
           <CardHeader>
             <CardTitle>Email preview</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-2">
-            <p className="text-sm">Hi {watched.buyer_name || "Client"},</p>
-            <p className="text-sm text-muted-foreground">
-              Your invoice is ready. Please use the import link in the email body to view or process your invoice.
-            </p>
-            <div className="rounded-xl bg-cream p-3 text-sm">
-              <p>Invoice total: {watched.currency} {total.toFixed(2)}</p>
-              <p>Due date: {watched.due_date || "-"}</p>
-              <p>Items: {watched.items.length}</p>
+          <CardContent className="space-y-4 text-sm">
+            <p>Hi {watched.buyer_name || "Client"},</p>
+            <p className="text-muted-foreground">Please find your invoice details below.</p>
+
+            <div className="rounded-xl border border-border bg-cream/40 p-4">
+              <div className="mb-4 flex items-start justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Seller</p>
+                  <p className="font-medium">{watched.seller_name || "-"}</p>
+                  <p className="text-muted-foreground">{watched.seller_email || "-"}</p>
+                  <p className="text-muted-foreground">{watched.seller_address || "-"}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Buyer</p>
+                  <p className="font-medium">{watched.buyer_name || "-"}</p>
+                  <p className="text-muted-foreground">{watched.buyer_email || "-"}</p>
+                  <p className="text-muted-foreground">{watched.buyer_address || "-"}</p>
+                </div>
+              </div>
+
+              <div className="mb-3 overflow-x-auto rounded-xl border border-border bg-background">
+                <table className="w-full text-xs">
+                  <colgroup>
+                    <col style={{ width: "40%" }} />
+                    <col style={{ width: "12%" }} />
+                    <col style={{ width: "18%" }} />
+                    <col style={{ width: "10%" }} />
+                    <col style={{ width: "20%" }} />
+                  </colgroup>
+                  <thead>
+                    <tr className="border-b border-border text-muted-foreground">
+                      <th className="px-3 py-2 text-left font-medium">Description</th>
+                      <th className="px-2 py-2 text-right font-medium">Qty</th>
+                      <th className="px-2 py-2 text-right font-medium">Unit Price</th>
+                      <th className="px-2 py-2 text-right font-medium">Tax %</th>
+                      <th className="px-3 py-2 text-right font-medium">Line Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {pricedItems.map((item, idx) => (
+                      <tr key={`${item.description}-${idx}`}>
+                        <td className="px-3 py-2">{item.description || `Item ${idx + 1}`}</td>
+                        <td className="px-2 py-2 text-right">{item.quantity}</td>
+                        <td className="px-2 py-2 text-right">
+                          {watchedCurrency} {item.unitPrice.toFixed(2)}
+                        </td>
+                        <td className="px-2 py-2 text-right">{item.taxRate}%</td>
+                        <td className="px-3 py-2 text-right font-medium">
+                          {watchedCurrency} {item.lineTotal.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                    {pricedItems.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="px-3 py-3 text-muted-foreground">
+                          No line items yet.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="space-y-1 text-right">
+                <p className="text-muted-foreground">
+                  Subtotal: {watchedCurrency} {subtotal.toFixed(2)}
+                </p>
+                <p className="text-muted-foreground">
+                  Tax total: {watchedCurrency} {taxTotal.toFixed(2)}
+                </p>
+                <p className="text-base font-semibold">
+                  Grand total: {watchedCurrency} {grandTotal.toFixed(2)}
+                </p>
+                <p className="text-xs text-muted-foreground">Due date: {watched.due_date || "-"}</p>
+              </div>
             </div>
-            <p className="text-xs text-muted-foreground">This is a live preview of the email tone and summary.</p>
+            <p className="text-xs text-muted-foreground">This preview updates live as you edit fields.</p>
           </CardContent>
         </Card>
       </div>

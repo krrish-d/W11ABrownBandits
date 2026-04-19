@@ -3,12 +3,15 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Search } from "lucide-react";
-import { fetchInvoices, getApiError } from "@/lib/api";
+import { fetchInvoices, getApiError, sendInvoiceWithImportLink } from "@/lib/api";
 import type { Invoice } from "@/lib/types";
 import { PageTransition } from "@/components/page-transition";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+
+type SendState = { invoiceId: string; email: string; loading: boolean; done: string };
 
 type FilterStatus = "all" | "draft" | "sent" | "viewed" | "paid" | "overdue" | "cancelled";
 
@@ -20,6 +23,7 @@ export default function InvoicesPage() {
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [sendState, setSendState] = useState<SendState | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -105,24 +109,76 @@ export default function InvoicesPage() {
                     | "overdue"
                     | "cancelled";
                   const badgeVariant = computedStatus === "overdue" ? "overdue" : computedStatus === "paid" ? "paid" : "pending";
+                  const isSending = sendState?.invoiceId === invoice.invoice_id;
                   return (
-                    <Link
-                      href={`/invoices/${invoice.invoice_id}`}
-                      key={invoice.invoice_id}
-                      className="grid gap-3 rounded-2xl border border-border p-4 transition hover:bg-cream md:grid-cols-[1.2fr_1fr_1fr_0.8fr]"
-                    >
-                      <div>
-                        <p className="font-medium">{invoice.invoice_number}</p>
-                        <p className="muted-text">{invoice.buyer_name || invoice.client_name}</p>
+                    <div key={invoice.invoice_id} className="rounded-2xl border border-border p-4 space-y-3">
+                      <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_1fr_0.8fr_auto]">
+                        <div>
+                          <Link href={`/invoices/${invoice.invoice_id}`} className="font-medium underline-offset-2 hover:underline">
+                            {invoice.invoice_number}
+                          </Link>
+                          <p className="muted-text">{invoice.buyer_name || invoice.client_name}</p>
+                        </div>
+                        <div className="muted-text">{invoice.buyer_email || invoice.client_email}</div>
+                        <div className="muted-text">
+                          {invoice.currency} {invoice.grand_total.toFixed(2)}
+                        </div>
+                        <div className="justify-self-start md:justify-self-end">
+                          <Badge variant={badgeVariant}>{computedStatus}</Badge>
+                        </div>
+                        <div className="flex flex-wrap gap-2 justify-self-start md:justify-self-end">
+                          <Link href={`/transform?invoiceId=${invoice.invoice_id}`}>
+                            <Button type="button" variant="secondary" size="sm">Transform</Button>
+                          </Link>
+                          <Link href={`/validate?invoiceId=${invoice.invoice_id}`}>
+                            <Button type="button" variant="secondary" size="sm">Validate</Button>
+                          </Link>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            onClick={() =>
+                              setSendState(isSending ? null : { invoiceId: invoice.invoice_id, email: invoice.buyer_email || invoice.client_email, loading: false, done: "" })
+                            }
+                          >
+                            Send
+                          </Button>
+                        </div>
                       </div>
-                      <div className="muted-text">{invoice.buyer_email || invoice.client_email}</div>
-                      <div className="muted-text">
-                        {invoice.currency} {invoice.grand_total.toFixed(2)}
-                      </div>
-                      <div className="justify-self-start md:justify-self-end">
-                        <Badge variant={badgeVariant}>{computedStatus}</Badge>
-                      </div>
-                    </Link>
+
+                      {/* Inline send email row */}
+                      {isSending ? (
+                        <div className="flex flex-wrap gap-2">
+                          <Input
+                            type="email"
+                            className="max-w-xs"
+                            placeholder="Recipient email"
+                            value={sendState!.email}
+                            onChange={(e) => setSendState((s) => s ? { ...s, email: e.target.value } : null)}
+                          />
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={sendState!.loading || !sendState!.email}
+                            onClick={async () => {
+                              setSendState((s) => s ? { ...s, loading: true, done: "" } : null);
+                              try {
+                                await sendInvoiceWithImportLink(invoice.invoice_id, sendState!.email);
+                                setSendState((s) => s ? { ...s, loading: false, done: `Sent to ${s.email}` } : null);
+                              } catch (e) {
+                                setSendState((s) => s ? { ...s, loading: false, done: getApiError(e) } : null);
+                              }
+                            }}
+                          >
+                            {sendState!.loading ? "Sending…" : "Send email"}
+                          </Button>
+                          <Button type="button" variant="ghost" size="sm" onClick={() => setSendState(null)}>
+                            Cancel
+                          </Button>
+                          {sendState!.done ? <p className="self-center text-sm text-muted-foreground">{sendState!.done}</p> : null}
+                        </div>
+                      ) : null}
+                    </div>
                   );
                 })}
               </div>
