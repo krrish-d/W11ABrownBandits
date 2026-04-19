@@ -17,9 +17,10 @@ import type {
   User,
 } from "./types";
 
-// Always route through the Next.js /api proxy so requests work in any environment.
-// The proxy destination is configured server-side in next.config.mjs via API_BASE_URL.
-const API_BASE = "/api";
+// In local/proxy mode use Next.js /api rewrites.
+// In deployed static/frontend-only mode set NEXT_PUBLIC_API_BASE_URL to your backend URL.
+const configuredPublicApiBase = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
+const API_BASE = configuredPublicApiBase || "/api";
 const TOKEN_KEY = "invoiceflow_token";
 const TOKEN_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
@@ -62,9 +63,9 @@ export function getApiError(error: unknown) {
       return "Request failed due to invalid input.";
     }
 
-    // Next.js rewrite/proxy returns a 500 when the backend is down (e.g. ECONNREFUSED).
+    // Proxy/backend failures may surface as 500 from Next.js rewrites.
     if (error.response?.status === 500) {
-      return "Could not reach the backend API. Make sure FastAPI is running on http://127.0.0.1:8000.";
+      return "Could not reach the backend API. Check your deployed API URL or local FastAPI server.";
     }
 
     if (!error.response) {
