@@ -10,13 +10,18 @@ import type {
   Invoice,
   InvoicePaymentSummary,
   Payment,
+  RecurringRule,
+  AuditLog,
   SendPayload,
   Template,
   User,
 } from "./types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+// Always route through the Next.js /api proxy so requests work in any environment.
+// The proxy destination is configured server-side in next.config.mjs via API_BASE_URL.
+const API_BASE = "/api";
 const TOKEN_KEY = "invoiceflow_token";
+const TOKEN_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
 const client = axios.create({
   baseURL: API_BASE,
@@ -35,7 +40,38 @@ client.interceptors.request.use((config) => {
 
 export function getApiError(error: unknown) {
   if (axios.isAxiosError(error)) {
-    return (error.response?.data as { detail?: string })?.detail || error.message;
+    const responseData = error.response?.data;
+    const detail =
+      typeof responseData === "object" && responseData && "detail" in responseData
+        ? (responseData as { detail?: unknown }).detail
+        : undefined;
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      const validationMessages = detail
+        .map((item) => {
+          if (typeof item === "string") return item;
+          if (typeof item === "object" && item && "msg" in item) {
+            return String((item as { msg?: unknown }).msg ?? "");
+          }
+          return "";
+        })
+        .filter(Boolean);
+      if (validationMessages.length) return validationMessages.join(", ");
+    }
+    if (detail && typeof detail === "object") {
+      return "Request failed due to invalid input.";
+    }
+
+    // Next.js rewrite/proxy returns a 500 when the backend is down (e.g. ECONNREFUSED).
+    if (error.response?.status === 500) {
+      return "Could not reach the backend API. Make sure FastAPI is running on http://127.0.0.1:8000.";
+    }
+
+    if (!error.response) {
+      return "Network error: backend API is unreachable.";
+    }
+
+    return error.message;
   }
   return "Something went wrong.";
 }
@@ -48,11 +84,13 @@ export function getStoredToken() {
 export function setStoredToken(token: string) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(TOKEN_KEY, token);
+  document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; path=/; max-age=${TOKEN_COOKIE_MAX_AGE_SECONDS}; samesite=lax`;
 }
 
 export function clearStoredToken() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(TOKEN_KEY);
+  document.cookie = `${TOKEN_KEY}=; path=/; max-age=0; samesite=lax`;
 }
 
 export async function login(email: string, password: string) {
@@ -181,6 +219,67 @@ export async function createClient(payload: Partial<Client>) {
 
 export async function fetchTemplates() {
   const { data } = await client.get<Template[]>("/templates");
+  return data;
+}
+
+export async function createTemplate(payload: {
+  name: string;
+  logo_url?: string;
+  primary_colour?: string;
+  secondary_colour?: string;
+  footer_text?: string;
+  payment_terms_text?: string;
+  bank_details?: string;
+  is_default?: boolean;
+}) {
+  const { data } = await client.post<Template>("/templates", payload);
+  return data;
+}
+
+export async function fetchRecurringRules() {
+  const { data } = await client.get<RecurringRule[]>("/recurring");
+  return data;
+}
+
+export async function createRecurringRule(payload: {
+  name: string;
+  frequency: string;
+  next_run_date: string;
+  end_date?: string;
+  invoice_template: {
+    seller_name: string;
+    seller_address: string;
+    seller_email: string;
+    buyer_name: string;
+    buyer_address: string;
+    buyer_email: string;
+    currency: string;
+    due_date: string;
+    notes?: string;
+    items: Array<{
+      item_number: string;
+      description: string;
+      quantity: number;
+      unit_price: number;
+      tax_rate: number;
+    }>;
+  };
+}) {
+  const { data } = await client.post<RecurringRule>("/recurring", payload);
+  return data;
+}
+
+export async function deleteRecurringRule(recurringId: string) {
+  const { data } = await client.delete(`/recurring/${recurringId}`);
+  return data;
+}
+
+export async function fetchAuditLogs(params?: {
+  entity_type?: string;
+  action?: string;
+  limit?: number;
+}) {
+  const { data } = await client.get<AuditLog[]>("/audit", { params });
   return data;
 }
 
