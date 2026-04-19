@@ -1,4 +1,5 @@
 import uuid
+from datetime import date
 from sqlalchemy import Column, String, Float, Date, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -24,6 +25,7 @@ class Invoice(Base):
     client_name = Column(String, nullable=False)
     client_email = Column(String, nullable=False)
     currency = Column(String, default="AUD")
+    issue_date = Column(Date, nullable=True, default=date.today)
     due_date = Column(Date, nullable=False)
     notes = Column(String, nullable=True)
     subtotal = Column(Float, default=0.0)
