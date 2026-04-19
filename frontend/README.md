@@ -9,7 +9,7 @@ Modern Next.js App Router frontend for the E-Invoice API.
 3. Copy env file:
    - PowerShell: `Copy-Item .env.example .env`
 4. Set API URL in `.env`:
-   - `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000/v2`
+   - `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`
 
 ## Run
 
@@ -29,7 +29,7 @@ Modern Next.js App Router frontend for the E-Invoice API.
 
 1. Import repo in Vercel
 2. Set project root directory to `frontend`
-3. Add env var: `NEXT_PUBLIC_API_BASE_URL` with your production API base (`https://.../v2`)
+3. Add env var: `NEXT_PUBLIC_API_BASE_URL` with your production API base root (`https://api.example.com`)
 4. Deploy
 
 This frontend expects the FastAPI backend to be hosted separately.

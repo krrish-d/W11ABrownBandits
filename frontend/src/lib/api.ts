@@ -18,9 +18,11 @@ import type {
 } from "./types";
 
 // In local/proxy mode use Next.js /api rewrites.
-// In deployed static/frontend-only mode set NEXT_PUBLIC_API_BASE_URL to your backend URL.
+// In deployed static/frontend-only mode set NEXT_PUBLIC_API_BASE_URL to your backend URL root.
+// This backend exposes auth/clients/payments at root paths, so "/v2" would 404 those endpoints.
 const configuredPublicApiBase = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
-const API_BASE = configuredPublicApiBase || "/api";
+const normalizedConfiguredBase = configuredPublicApiBase?.replace(/\/+$/, "");
+const API_BASE = normalizedConfiguredBase?.replace(/\/v2$/, "") || "/api";
 const TOKEN_KEY = "invoiceflow_token";
 const TOKEN_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
