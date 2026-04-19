@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.database import Base, get_db
+from app.models.client import Client
 from main import app
 
 # In-memory test database
@@ -84,6 +85,28 @@ def test_create_invoice_unique_ids():
     id1 = client.post("/invoice/create", json=SAMPLE_INVOICE).json()["invoice_id"]
     id2 = client.post("/invoice/create", json=SAMPLE_INVOICE).json()["invoice_id"]
     assert id1 != id2
+
+
+def test_create_invoice_auto_creates_new_client():
+    payload = {
+        **SAMPLE_INVOICE,
+        "buyer_name": "Auto Added Client",
+        "buyer_email": "auto-added-client@example.com",
+    }
+    res = client.post("/invoice/create", json=payload)
+    assert res.status_code == 201
+
+    db = TestingSessionLocal()
+    try:
+        created_client = (
+            db.query(Client)
+            .filter(Client.email == "auto-added-client@example.com")
+            .first()
+        )
+        assert created_client is not None
+        assert created_client.name == "Auto Added Client"
+    finally:
+        db.close()
 
 def test_create_invoice_missing_client_name():
     payload = {**SAMPLE_INVOICE}

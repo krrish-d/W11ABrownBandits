@@ -146,14 +146,10 @@ def parse_csv(csv_string: str) -> dict:
 
     row = rows[0]
 
-    # dict_to_csv exports "issue_date"; older samples may use "due_date" — accept both
-    date_col = None
-    if row.get("due_date"):
-        date_col = "due_date"
-    elif row.get("issue_date"):
-        date_col = "issue_date"
-    if not date_col:
-        raise ValueError("CSV must include 'due_date' or 'issue_date' (and values)")
+    # Accept issue_date OR due_date as the date field
+    issue = (row.get("issue_date") or row.get("due_date") or "").strip()
+    if not issue:
+        raise ValueError("CSV must include 'issue_date' or 'due_date' column with a value")
 
     for field in ["buyer_name", "seller_name", "buyer_address", "seller_address", "currency"]:
         if field not in row or not str(row[field]).strip():
@@ -169,8 +165,6 @@ def parse_csv(csv_string: str) -> dict:
                 "unit_price": r.get("unit_price"),
                 "line_total": r.get("line_total"),
             })
-
-    issue = (row.get("due_date") or row.get("issue_date") or "").strip()
 
     return {
         "invoice_number": row.get("invoice_number"),
