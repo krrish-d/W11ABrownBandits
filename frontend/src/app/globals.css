@@ -1,0 +1,34 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 38 63% 96%; /* warm cream */
+  --foreground: 255 20% 20%;
+  --card: 0 0% 100%;
+  --card-foreground: 255 20% 20%;
+  --border: 260 20% 88%;
+  --input: 260 20% 88%;
+  --primary: 262 55% 70%; /* soft lavender */
+  --primary-foreground: 255 20% 16%;
+  --muted: 258 28% 94%;
+  --muted-foreground: 255 12% 45%;
+  --accent: 110 26% 78%; /* sage */
+  --accent-foreground: 255 20% 20%;
+  --rose: 345 40% 82%;
+  --sage: 110 26% 82%;
+  --lavender: 262 55% 87%;
+  --cream: 38 63% 92%;
+}
+
+* {
+  @apply border-border;
+}
+
+body {
+  @apply bg-background text-foreground antialiased;
+}
+
+.muted-text {
+  @apply text-sm text-muted-foreground;
+}
