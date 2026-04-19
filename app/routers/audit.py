@@ -5,9 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.audit import AuditLog
-from app.models.user import User
 from app.schemas.audit import AuditLogResponse
-from app.services.auth import require_roles
 
 router = APIRouter(prefix="/audit", tags=["Audit Log"])
 
@@ -20,12 +18,10 @@ def get_audit_logs(
     changed_by: Optional[str] = Query(default=None, description="Filter by user_id or 'system'"),
     limit: int = Query(default=100, le=500),
     offset: int = Query(default=0, ge=0),
-    _user: User = Depends(require_roles("admin", "accountant")),
     db: Session = Depends(get_db),
 ):
     """
-    Returns the audit trail.  Requires at least accountant role.
-    Results are ordered newest-first.
+    Returns the audit trail, ordered newest-first.
     """
     q = db.query(AuditLog)
     if entity_type:
@@ -49,7 +45,6 @@ def get_audit_logs(
 def get_entity_audit_trail(
     entity_type: str,
     entity_id: str,
-    _user: User = Depends(require_roles("admin", "accountant")),
     db: Session = Depends(get_db),
 ):
     """Full history for a single entity."""
