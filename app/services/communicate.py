@@ -34,6 +34,25 @@ def _resend_credentials() -> tuple[str, str, str]:
     return api_key, sender_email, sender_name
 
 
+def _resolve_recipient(desired_email: str) -> tuple[str, str]:
+    """
+    When RESEND_TEST_RECIPIENT is set (Resend test / unverified-domain mode),
+    all email is redirected to that address and a banner note is included.
+    Returns (actual_to_address, test_mode_note).
+    """
+    test_addr = os.getenv("RESEND_TEST_RECIPIENT", "").strip()
+    if test_addr:
+        note = (
+            f"<p style='margin:0 0 12px;padding:10px 14px;background:#fef3c7;"
+            f"border-left:4px solid #f59e0b;border-radius:4px;font-size:12px;color:#92400e'>"
+            f"<strong>Test mode:</strong> This email was intended for "
+            f"<em>{desired_email}</em> but was redirected to your Resend test address "
+            f"because no verified sending domain is configured.</p>"
+        )
+        return test_addr, note
+    return desired_email, ""
+
+
 # -------------------------------------------------------
 # ORIGINAL: Send invoice XML via Resend (kept for backward compat)
 # -------------------------------------------------------
@@ -41,12 +60,13 @@ def send_invoice_email(invoice_xml: str, recipient_email: str) -> dict:
     invoice_id = extract_invoice_id(invoice_xml)
 
     resend_api_key, sender_email, sender_name = _resend_credentials()
+    actual_to, _ = _resolve_recipient(recipient_email)
 
     try:
         resend.api_key = resend_api_key
         resend.Emails.send({
             "from": f"{sender_name} <{sender_email}>",
-            "to": [recipient_email],
+            "to": [actual_to],
             "subject": f"Invoice {invoice_id}",
             "text": "Please find the attached UBL XML invoice.",
             "attachments": [
@@ -69,24 +89,20 @@ def send_invoice_email(invoice_xml: str, recipient_email: str) -> dict:
 
 
 # -------------------------------------------------------
-# NEW: Send rich HTML invoice email with "Add to Library" button
+# Send rich HTML invoice email (no import-link button)
 # -------------------------------------------------------
 def send_invoice_with_import_link(
     invoice,        # app.models.invoice.Invoice ORM instance
     items: list,    # list of LineItem ORM instances
     recipient_email: str,
-    import_token: str,
+    import_token: str,   # kept for API compat but no longer embedded in email
 ) -> dict:
     """
-    Sends a styled HTML email to *recipient_email* that includes a prominent
-    'Add to My Invoice Library' button.  Clicking the button hits the backend
-    import endpoint which creates a copy of the invoice in the recipient's
-    account.
+    Sends a clean HTML invoice email to *recipient_email*.
+    The "Add to My Invoice Library" button has been removed to avoid confusion.
     """
     resend_api_key, sender_email, sender_name = _resend_credentials()
-
-    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
-    import_url = f"{frontend_url}/invoice/import/{import_token}"
+    actual_to, test_note = _resolve_recipient(recipient_email)
 
     # Build the line-items HTML table rows
     item_rows = "".join(
@@ -120,6 +136,8 @@ def send_invoice_with_import_link(
 
         <!-- Body -->
         <tr><td style="padding:28px 32px;">
+          {test_note}
+
           <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
             <tr>
               <td style="width:50%;vertical-align:top;">
@@ -182,21 +200,9 @@ def send_invoice_with_import_link(
             </tfoot>
           </table>
 
-          <!-- CTA button -->
-          <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px;">
-            <tr><td align="center">
-              <a href="{import_url}"
-                 style="display:inline-block;padding:14px 32px;background:#2563eb;color:#ffffff;
-                        font-size:15px;font-weight:bold;text-decoration:none;border-radius:6px;">
-                &#x2B; Add to My Invoice Library
-              </a>
-            </td></tr>
-          </table>
-          <p style="text-align:center;font-size:12px;color:#9ca3af;margin:0">
-            Or copy this link: <a href="{import_url}" style="color:#2563eb">{import_url}</a>
-          </p>
-          <p style="text-align:center;font-size:11px;color:#d1d5db;margin:12px 0 0">
-            This link expires in 7 days and can only be used once.
+          <p style="margin:0;font-size:13px;color:#6b7280;text-align:center">
+            Please arrange payment by <strong>{invoice.due_date}</strong>.
+            If you have any questions, reply to this email.
           </p>
         </td></tr>
 
@@ -217,7 +223,7 @@ def send_invoice_with_import_link(
         resend.api_key = resend_api_key
         resend.Emails.send({
             "from": f"{sender_name} <{sender_email}>",
-            "to": [recipient_email],
+            "to": [actual_to],
             "subject": f"Invoice {invoice.invoice_number} from {invoice.seller_name} – {invoice.currency} {invoice.grand_total:.2f} due {invoice.due_date}",
             "html": html,
         })
@@ -229,25 +235,27 @@ def send_invoice_with_import_link(
         "timestamp": datetime.now(timezone.utc),
         "recipient_email": recipient_email,
         "invoice_id": invoice.invoice_id,
-        "import_url": import_url,
+        "import_url": None,
     }
 
 
 # -------------------------------------------------------
-# NEW: Send payment reminder for an overdue invoice
+# Send payment reminder for an overdue invoice
 # -------------------------------------------------------
 def send_payment_reminder(invoice) -> None:
     """
-    Sends a short plain-text reminder email to the buyer for an overdue invoice.
-    Raises RuntimeError on delivery failure.
+    Sends a short HTML reminder email.
+    In test mode (RESEND_TEST_RECIPIENT set), routes to that address.
     """
     resend_api_key, sender_email, sender_name = _resend_credentials()
+    actual_to, test_note = _resolve_recipient(invoice.buyer_email)
 
     from datetime import date
     days_overdue = (date.today() - invoice.due_date).days
 
     html = f"""
-<html><body style="font-family:Arial,sans-serif;color:#374151">
+<html><body style="font-family:Arial,sans-serif;color:#374151;max-width:600px;margin:0 auto;padding:32px 16px">
+  {test_note}
   <h2 style="color:#dc2626">Payment Reminder – Invoice {invoice.invoice_number}</h2>
   <p>Dear {invoice.buyer_name},</p>
   <p>This is a friendly reminder that the following invoice is now
@@ -260,8 +268,8 @@ def send_payment_reminder(invoice) -> None:
     <tr><td style="padding:4px 12px 4px 0;color:#6b7280">Amount Due</td>
         <td style="padding:4px 0"><strong>{invoice.currency} {invoice.grand_total:.2f}</strong></td></tr>
   </table>
-  <p>Please arrange payment at your earliest convenience.  If you have already
-     paid, please disregard this message.</p>
+  <p>Please arrange payment at your earliest convenience.
+     If you have already paid, please disregard this message.</p>
   <p>Regards,<br>{invoice.seller_name}</p>
 </body></html>
 """
@@ -270,7 +278,7 @@ def send_payment_reminder(invoice) -> None:
         resend.api_key = resend_api_key
         resend.Emails.send({
             "from": f"{sender_name} <{sender_email}>",
-            "to": [invoice.buyer_email],
+            "to": [actual_to],
             "subject": f"Payment Reminder – Invoice {invoice.invoice_number} is {days_overdue} days overdue",
             "html": html,
         })
