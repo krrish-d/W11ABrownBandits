@@ -11,6 +11,7 @@ from lxml import etree
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.client import Client
 from app.models.invoice import Invoice, LineItem
 from app.models.invoice_import import InvoiceImportToken
 from app.models.user import User
@@ -42,7 +43,8 @@ def generate_ubl_xml(invoice: Invoice, items: list) -> str:
 
     etree.SubElement(root, f"{{{cbc}}}UBLVersionID").text = "2.1"
     etree.SubElement(root, f"{{{cbc}}}ID").text = invoice.invoice_number
-    etree.SubElement(root, f"{{{cbc}}}IssueDate").text = str(invoice.due_date)
+    issue_date = getattr(invoice, "issue_date", None) or invoice.due_date
+    etree.SubElement(root, f"{{{cbc}}}IssueDate").text = str(issue_date)
     etree.SubElement(root, f"{{{cbc}}}InvoiceTypeCode").text = "380"
     etree.SubElement(root, f"{{{cbc}}}DocumentCurrencyCode").text = invoice.currency
 
@@ -113,19 +115,20 @@ def generate_csv(invoice: Invoice, items: list) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
 
-    writer.writerow(["Invoice ID", "Invoice Number", "Status", "Seller Name",
-                     "Seller Address", "Seller Email", "Buyer Name", "Buyer Address",
-                     "Buyer Email", "Currency", "Due Date",
-                     "Subtotal", "Tax Total", "Grand Total"])
+    # Column names match parse_csv() in services/transform.py (snake_case)
+    writer.writerow(["invoice_number", "currency", "seller_name", "seller_address",
+                     "seller_email", "buyer_name", "buyer_address", "buyer_email",
+                     "issue_date", "due_date", "subtotal", "tax_total", "grand_total"])
     writer.writerow([
-        invoice.invoice_id, invoice.invoice_number, invoice.status,
+        invoice.invoice_number, invoice.currency,
         invoice.seller_name, invoice.seller_address, invoice.seller_email,
-        invoice.buyer_name, invoice.buyer_address, invoice.buyer_email, invoice.currency,
-        str(invoice.due_date), invoice.subtotal, invoice.tax_total, invoice.grand_total
+        invoice.buyer_name, invoice.buyer_address, invoice.buyer_email,
+        str(getattr(invoice, "issue_date", None) or invoice.due_date), str(invoice.due_date),
+        invoice.subtotal, invoice.tax_total, invoice.grand_total
     ])
 
     writer.writerow([])
-    writer.writerow(["Item Number", "Description", "Quantity", "Unit Price", "Tax Rate (%)", "Line Total"])
+    writer.writerow(["item_number", "description", "quantity", "unit_price", "tax_rate", "line_total"])
     for item in items:
         writer.writerow([
             item.item_number, item.description, item.quantity, item.unit_price,
@@ -285,6 +288,7 @@ def create_invoice(
         client_name=invoice_data.buyer_name,
         client_email=invoice_data.buyer_email,
         currency=invoice_data.currency,
+        issue_date=invoice_data.issue_date or date.today(),
         due_date=invoice_data.due_date,
         notes=invoice_data.notes,
         subtotal=subtotal,
@@ -297,6 +301,23 @@ def create_invoice(
     for item_data in line_items_data:
         line_item = LineItem(invoice_id=new_invoice.invoice_id, **item_data)
         db.add(line_item)
+
+    # Auto-create buyer as a reusable client profile if not already present.
+    buyer_email = invoice_data.buyer_email.strip()
+    existing_client_query = db.query(Client).filter(Client.email.ilike(buyer_email))
+    if current_user:
+        existing_client_query = existing_client_query.filter(Client.owner_id == current_user.user_id)
+    else:
+        existing_client_query = existing_client_query.filter(Client.owner_id == None)  # noqa: E711
+    existing_client = existing_client_query.first()
+    if not existing_client:
+        db.add(Client(
+            owner_id=current_user.user_id if current_user else None,
+            name=invoice_data.buyer_name,
+            email=buyer_email,
+            address=invoice_data.buyer_address,
+            currency=invoice_data.currency,
+        ))
 
     log_audit(db, "invoice", new_invoice.invoice_id, "create",
               changed_by=current_user.user_id if current_user else None)
@@ -545,9 +566,51 @@ def update_invoice(
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     update_data = updates.model_dump(exclude_unset=True)
+    incoming_items = update_data.pop("items", None)
+
     old_values = {k: str(getattr(invoice, k)) for k in update_data}
     for field, value in update_data.items():
         setattr(invoice, field, value)
+
+    if incoming_items is not None:
+        existing_items = db.query(LineItem).filter(LineItem.invoice_id == invoice_id).all()
+        old_item_count = len(existing_items)
+        old_subtotal = invoice.subtotal
+        old_tax_total = invoice.tax_total
+        old_grand_total = invoice.grand_total
+
+        for old_item in existing_items:
+            db.delete(old_item)
+
+        subtotal = 0.0
+        tax_total = 0.0
+        for item in incoming_items:
+            line_total = round(item["quantity"] * item["unit_price"], 2)
+            tax_amount = round(line_total * (item["tax_rate"] / 100), 2)
+            subtotal += line_total
+            tax_total += tax_amount
+            db.add(LineItem(
+                invoice_id=invoice_id,
+                item_number=item["item_number"],
+                description=item["description"],
+                quantity=item["quantity"],
+                unit_price=item["unit_price"],
+                tax_rate=item["tax_rate"],
+                line_total=line_total,
+            ))
+
+        invoice.subtotal = round(subtotal, 2)
+        invoice.tax_total = round(tax_total, 2)
+        invoice.grand_total = round(invoice.subtotal + invoice.tax_total, 2)
+
+        old_values["items"] = f"{old_item_count} items"
+        update_data["items"] = f"{len(incoming_items)} items"
+        old_values["subtotal"] = str(old_subtotal)
+        old_values["tax_total"] = str(old_tax_total)
+        old_values["grand_total"] = str(old_grand_total)
+        update_data["subtotal"] = invoice.subtotal
+        update_data["tax_total"] = invoice.tax_total
+        update_data["grand_total"] = invoice.grand_total
 
     # Keep legacy client_* fields aligned with buyer_* values.
     if "buyer_name" in update_data:
