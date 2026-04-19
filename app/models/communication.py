@@ -3,7 +3,6 @@ from sqlalchemy import Column, String, DateTime
 from sqlalchemy.sql import func
 from app.database import Base
 
-
 class CommunicationLog(Base):
     __tablename__ = "communication_logs"
 
