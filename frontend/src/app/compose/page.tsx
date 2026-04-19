@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useFieldArray, useForm, useWatch } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Upload } from "lucide-react";
 import {
   createInvoice,
   fetchClients,
@@ -12,6 +13,7 @@ import {
   fetchTemplates,
   getApiError,
   getStoredToken,
+  parseInvoiceFile,
   sendInvoiceWithImportLink,
   updateInvoice,
 } from "@/lib/api";
@@ -57,6 +59,64 @@ export default function ComposePage() {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [selectedClientId, setSelectedClientId] = useState("");
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [importLoading, setImportLoading] = useState(false);
+  const [importMessage, setImportMessage] = useState("");
+  const importFileRef = useRef<HTMLInputElement>(null);
+
+  const VALID_CURRENCIES = ["AUD", "USD", "GBP", "EUR"] as const;
+
+  function applyParsedData(parsed: Record<string, unknown>) {
+    const str = (v: unknown) => (v != null ? String(v).trim() : "");
+    const num = (v: unknown) => {
+      const n = parseFloat(String(v ?? "0"));
+      return isNaN(n) ? 0 : n;
+    };
+    const currency = str(parsed.currency).toUpperCase();
+
+    const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
+    const mappedItems = rawItems
+      .filter((it: unknown) => it && typeof it === "object")
+      .map((it: unknown) => {
+        const item = it as Record<string, unknown>;
+        return {
+          description: str(item.description) || "Item",
+          quantity: Math.max(1, num(item.quantity)),
+          unit_price: num(item.unit_price),
+          tax_rate: num(item.tax_rate) || 10,
+        };
+      });
+
+    form.reset({
+      seller_name: str(parsed.seller_name),
+      seller_address: str(parsed.seller_address),
+      seller_email: str(parsed.seller_email),
+      buyer_name: str(parsed.buyer_name),
+      buyer_address: str(parsed.buyer_address),
+      buyer_email: str(parsed.buyer_email),
+      currency: (VALID_CURRENCIES.includes(currency as "AUD") ? currency : "AUD") as FormValues["currency"],
+      issue_date: str(parsed.issue_date),
+      due_date: str(parsed.due_date),
+      notes: str(parsed.notes),
+      items: mappedItems.length > 0 ? mappedItems : [{ description: "", quantity: 1, unit_price: 0, tax_rate: 10 }],
+    });
+  }
+
+  async function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    try {
+      setImportLoading(true);
+      setImportMessage("");
+      const parsed = await parseInvoiceFile(file);
+      applyParsedData(parsed);
+      setImportMessage(`Imported from "${file.name}". Review and adjust before saving.`);
+    } catch (err) {
+      setImportMessage(getApiError(err));
+    } finally {
+      setImportLoading(false);
+    }
+  }
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -83,6 +143,21 @@ export default function ComposePage() {
       if (clientRes.status === "fulfilled") setClients(clientRes.value);
       if (templateRes.status === "fulfilled") setTemplates(templateRes.value);
     });
+
+    // Pre-fill from file import initiated on the invoices list page
+    const stored = sessionStorage.getItem("invoice_import_data");
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored) as Record<string, unknown>;
+        applyParsedData(parsed);
+        setImportMessage("Form pre-filled from imported file. Review before saving.");
+      } catch {
+        // ignore corrupt data
+      } finally {
+        sessionStorage.removeItem("invoice_import_data");
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -226,6 +301,34 @@ export default function ComposePage() {
             <CardTitle>{editId ? "Edit invoice" : "Compose invoice"}</CardTitle>
           </CardHeader>
           <CardContent>
+            {/* File import bar */}
+            <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-dashed border-input bg-muted/40 px-4 py-3">
+              <Upload className="h-4 w-4 text-muted-foreground shrink-0" />
+              <p className="text-sm text-muted-foreground flex-1">
+                Have an existing invoice file? Import it to pre-fill this form.
+              </p>
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".json,.csv,.xml,.pdf"
+                className="hidden"
+                onChange={handleImportFile}
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={importLoading}
+                onClick={() => importFileRef.current?.click()}
+              >
+                {importLoading ? "Importing…" : "Import from file"}
+              </Button>
+              {importMessage ? (
+                <p className={`w-full text-xs ${importMessage.toLowerCase().includes("error") || importMessage.toLowerCase().includes("could not") || importMessage.toLowerCase().includes("network") ? "text-rose-600" : "text-green-600"}`}>
+                  {importMessage}
+                </p>
+              ) : null}
+            </div>
             <form className="space-y-4" onSubmit={form.handleSubmit(onSubmit)}>
               {!editId ? (
                 <div className="grid gap-3 md:grid-cols-2">

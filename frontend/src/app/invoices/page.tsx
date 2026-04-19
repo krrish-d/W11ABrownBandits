@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { Search, Trash2 } from "lucide-react";
-import { fetchInvoices, getApiError, removeInvoice, sendInvoiceWithImportLink } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { Search, Trash2, Upload } from "lucide-react";
+import { fetchInvoices, getApiError, parseInvoiceFile, removeInvoice, sendInvoiceWithImportLink } from "@/lib/api";
 import type { Invoice } from "@/lib/types";
 import { PageTransition } from "@/components/page-transition";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,6 +17,7 @@ type SendState = { invoiceId: string; email: string; loading: boolean; done: str
 type FilterStatus = "all" | "draft" | "sent" | "viewed" | "paid" | "overdue" | "cancelled";
 
 export default function InvoicesPage() {
+  const router = useRouter();
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<FilterStatus>("all");
@@ -26,6 +28,24 @@ export default function InvoicesPage() {
   const [sendState, setSendState] = useState<SendState | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const importFileRef = useRef<HTMLInputElement>(null);
+
+  async function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    try {
+      setImportLoading(true);
+      const parsed = await parseInvoiceFile(file);
+      sessionStorage.setItem("invoice_import_data", JSON.stringify(parsed));
+      router.push("/compose");
+    } catch (err) {
+      setError(getApiError(err));
+    } finally {
+      setImportLoading(false);
+    }
+  }
 
   useEffect(() => {
     setLoading(true);
@@ -57,9 +77,32 @@ export default function InvoicesPage() {
   return (
     <PageTransition>
       <div className="space-y-6">
-        <div>
-          <h2 className="text-2xl font-semibold">Invoices</h2>
-          <p className="muted-text">Search, filter and inspect all invoice records.</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-semibold">Invoices</h2>
+            <p className="muted-text">Search, filter and inspect all invoice records.</p>
+          </div>
+          <div className="flex gap-2">
+            <input
+              ref={importFileRef}
+              type="file"
+              accept=".json,.csv,.xml,.pdf"
+              className="hidden"
+              onChange={handleImportFile}
+            />
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={importLoading}
+              onClick={() => importFileRef.current?.click()}
+            >
+              <Upload className="mr-2 h-4 w-4" />
+              {importLoading ? "Parsing…" : "Import from file"}
+            </Button>
+            <Link href="/compose">
+              <Button type="button">New invoice</Button>
+            </Link>
+          </div>
         </div>
 
         <Card>
@@ -162,7 +205,7 @@ export default function InvoicesPage() {
                             <>
                               <Button
                                 type="button"
-                                variant="danger"
+                                variant="destructive"
                                 size="sm"
                                 disabled={deletingId === invoice.invoice_id}
                                 onClick={() => handleDelete(invoice.invoice_id)}

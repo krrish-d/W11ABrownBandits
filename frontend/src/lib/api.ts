@@ -309,3 +309,12 @@ export async function fetchDashboardTopClients(limit = 6) {
   });
   return data;
 }
+
+export async function parseInvoiceFile(file: File): Promise<Record<string, unknown>> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const { data } = await client.post<Record<string, unknown>>("/invoice/parse-file", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}

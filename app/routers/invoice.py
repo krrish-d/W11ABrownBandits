@@ -5,7 +5,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from lxml import etree
 from sqlalchemy.orm import Session
@@ -18,6 +18,7 @@ from app.models.user import User
 from app.schemas.invoice import InvoiceCreate, InvoiceResponse, InvoiceUpdate
 from app.services.audit import log_audit
 from app.services.auth import get_optional_current_user
+from app.services.transform import parse_csv, parse_generic_xml, parse_json, parse_pdf, parse_ubl_xml
 
 router = APIRouter(
     prefix="/invoice",
@@ -645,6 +646,55 @@ def delete_invoice(
     db.delete(invoice)
     db.commit()
     return {"message": f"Invoice {invoice_id} deleted successfully"}
+
+
+# -------------------------------------------------------
+# POST /invoice/parse-file – parse an uploaded invoice file into form-friendly JSON
+# -------------------------------------------------------
+@router.post("/parse-file")
+async def parse_invoice_file(file: UploadFile = File(...)):
+    """
+    Accept a .json, .csv, .xml (UBL or generic), or .pdf invoice file and return
+    the extracted fields as a JSON object ready to pre-fill the compose form.
+    No authentication required.
+    """
+    filename = file.filename or ""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    content = await file.read()
+
+    try:
+        if ext == "json":
+            data = parse_json(content.decode(errors="replace"))
+        elif ext == "csv":
+            data = parse_csv(content.decode(errors="replace"))
+        elif ext in ("xml",):
+            text = content.decode(errors="replace")
+            try:
+                data = parse_ubl_xml(text)
+            except ValueError:
+                data = parse_generic_xml(text)
+        elif ext == "pdf":
+            data = parse_pdf(content)
+        else:
+            # Sniff content if extension is missing/unknown
+            text = content.decode(errors="replace").lstrip()
+            if text.startswith("{"):
+                data = parse_json(text)
+            elif text.startswith("<?xml") or "<Invoice" in text[:300]:
+                try:
+                    data = parse_ubl_xml(text)
+                except ValueError:
+                    data = parse_generic_xml(text)
+            elif "seller_name" in text or "buyer_name" in text or "invoice_number" in text:
+                data = parse_csv(text)
+            else:
+                raise HTTPException(status_code=400, detail="Could not detect file format. Please use .json, .csv, .xml, or .pdf")
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return data
 
 
 # Legacy Sprint 1 routes kept accessible in parallel
