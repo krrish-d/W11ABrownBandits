@@ -1,6 +1,9 @@
 import csv
 import io
+import secrets
 import uuid
+from datetime import date, datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -9,7 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.invoice import Invoice, LineItem
+from app.models.invoice_import import InvoiceImportToken
+from app.models.user import User
 from app.schemas.invoice import InvoiceCreate, InvoiceResponse, InvoiceUpdate
+from app.services.audit import log_audit
+from app.services.auth import get_optional_current_user
 
 router = APIRouter(
     prefix="/invoice",
@@ -216,8 +223,31 @@ def generate_pdf(invoice: Invoice, items: list) -> bytes:
     return buffer.getvalue()
 
 
+def _auto_mark_overdue(db: Session) -> int:
+    """Mark all past-due, non-terminal invoices as overdue. Returns count changed."""
+    today = date.today()
+    candidates = (
+        db.query(Invoice)
+        .filter(
+            Invoice.due_date < today,
+            Invoice.status.notin_(["paid", "cancelled", "overdue"]),
+        )
+        .all()
+    )
+    for inv in candidates:
+        log_audit(db, "invoice", inv.invoice_id, "status_change",
+                  changed_by="system",
+                  changes={"status": {"old": inv.status, "new": "overdue"}})
+        inv.status = "overdue"
+    return len(candidates)
+
+
 @router.post("/create", response_model=InvoiceResponse, status_code=201)
-def create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
+def create_invoice(
+    invoice_data: InvoiceCreate,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
     invoice_number = f"INV-{str(uuid.uuid4())[:8].upper()}"
 
     subtotal = 0.0
@@ -244,6 +274,7 @@ def create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
 
     new_invoice = Invoice(
         invoice_number=invoice_number,
+        owner_id=current_user.user_id if current_user else None,
         seller_name=invoice_data.seller_name,
         seller_address=invoice_data.seller_address,
         seller_email=invoice_data.seller_email,
@@ -267,14 +298,194 @@ def create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
         line_item = LineItem(invoice_id=new_invoice.invoice_id, **item_data)
         db.add(line_item)
 
+    log_audit(db, "invoice", new_invoice.invoice_id, "create",
+              changed_by=current_user.user_id if current_user else None)
     db.commit()
     db.refresh(new_invoice)
     return new_invoice
 
 
 @router.get("/list", response_model=list[InvoiceResponse])
-def list_invoices(db: Session = Depends(get_db)):
-    return db.query(Invoice).all()
+def list_invoices(
+    # ---- Filters ----
+    status: Optional[str] = Query(default=None, description="Comma-separated statuses, e.g. 'overdue,sent'"),
+    search: Optional[str] = Query(default=None, description="Search buyer/seller name or invoice number"),
+    date_from: Optional[date] = Query(default=None, description="Filter due_date >= date_from (YYYY-MM-DD)"),
+    date_to: Optional[date] = Query(default=None, description="Filter due_date <= date_to (YYYY-MM-DD)"),
+    min_amount: Optional[float] = Query(default=None, description="Filter grand_total >= min_amount"),
+    max_amount: Optional[float] = Query(default=None, description="Filter grand_total <= max_amount"),
+    # ---- Sorting ----
+    sort_by: str = Query(default="created_at", description="Field to sort by: created_at | due_date | grand_total | invoice_number | buyer_name"),
+    sort_order: str = Query(default="desc", description="asc or desc"),
+    # ---- Pagination ----
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    # Auto-mark overdue before returning
+    changed = _auto_mark_overdue(db)
+    if changed:
+        db.commit()
+
+    q = db.query(Invoice)
+
+    if status:
+        statuses = [s.strip() for s in status.split(",") if s.strip()]
+        q = q.filter(Invoice.status.in_(statuses))
+
+    if search:
+        term = f"%{search}%"
+        q = q.filter(
+            Invoice.buyer_name.ilike(term)
+            | Invoice.seller_name.ilike(term)
+            | Invoice.invoice_number.ilike(term)
+        )
+
+    if date_from:
+        q = q.filter(Invoice.due_date >= date_from)
+    if date_to:
+        q = q.filter(Invoice.due_date <= date_to)
+    if min_amount is not None:
+        q = q.filter(Invoice.grand_total >= min_amount)
+    if max_amount is not None:
+        q = q.filter(Invoice.grand_total <= max_amount)
+
+    sort_field_map = {
+        "created_at": Invoice.created_at,
+        "due_date": Invoice.due_date,
+        "grand_total": Invoice.grand_total,
+        "invoice_number": Invoice.invoice_number,
+        "buyer_name": Invoice.buyer_name,
+    }
+    sort_col = sort_field_map.get(sort_by, Invoice.created_at)
+    q = q.order_by(sort_col.asc() if sort_order == "asc" else sort_col.desc())
+
+    offset = (page - 1) * page_size
+    return q.offset(offset).limit(page_size).all()
+
+
+# -------------------------------------------------------
+# PUT /invoice/{invoice_id}/status – explicit status change
+# -------------------------------------------------------
+VALID_STATUSES = {"draft", "sent", "viewed", "paid", "overdue", "cancelled"}
+
+
+@router.put("/{invoice_id}/status", response_model=InvoiceResponse)
+def update_invoice_status(
+    invoice_id: str,
+    status: str = Query(description=f"New status. One of: {', '.join(sorted(VALID_STATUSES))}"),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    if status not in VALID_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid status '{status}'. Must be one of: {', '.join(sorted(VALID_STATUSES))}",
+        )
+    invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    old_status = invoice.status
+    invoice.status = status
+    log_audit(db, "invoice", invoice_id, "status_change",
+              changed_by=current_user.user_id if current_user else None,
+              changes={"status": {"old": old_status, "new": status}})
+    db.commit()
+    db.refresh(invoice)
+    return invoice
+
+
+# -------------------------------------------------------
+# POST /invoice/check-overdue – manually trigger overdue detection
+# -------------------------------------------------------
+@router.post("/check-overdue", status_code=200)
+def check_overdue(db: Session = Depends(get_db)):
+    count = _auto_mark_overdue(db)
+    db.commit()
+    return {"marked_overdue": count}
+
+
+# -------------------------------------------------------
+# GET /invoice/import/{token} – claim invoice from email link
+# -------------------------------------------------------
+@router.get("/import/{token}", response_model=InvoiceResponse)
+def import_invoice_from_token(
+    token: str,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    """
+    Called when the recipient clicks 'Add to My Invoice Library' in the email.
+    Creates a copy of the original invoice owned by the current user (if logged
+    in) and marks the one-time token as used.
+    """
+    import_token = (
+        db.query(InvoiceImportToken)
+        .filter(InvoiceImportToken.token == token)
+        .first()
+    )
+    if not import_token:
+        raise HTTPException(status_code=404, detail="Import link not found")
+    if import_token.used_at is not None:
+        raise HTTPException(status_code=410, detail="This import link has already been used")
+    if datetime.now(timezone.utc) > import_token.expires_at.replace(tzinfo=timezone.utc):
+        raise HTTPException(status_code=410, detail="This import link has expired")
+
+    original = db.query(Invoice).filter(Invoice.invoice_id == import_token.invoice_id).first()
+    if not original:
+        raise HTTPException(status_code=404, detail="Original invoice no longer exists")
+
+    original_items = db.query(LineItem).filter(LineItem.invoice_id == original.invoice_id).all()
+
+    # Mark invoice as "viewed" on the original (so the sender knows the link was clicked)
+    if original.status == "sent":
+        original.status = "viewed"
+
+    # Create a copy for the recipient
+    new_number = f"IMP-{str(uuid.uuid4())[:8].upper()}"
+    imported = Invoice(
+        invoice_number=new_number,
+        owner_id=current_user.user_id if current_user else None,
+        seller_name=original.seller_name,
+        seller_address=original.seller_address,
+        seller_email=original.seller_email,
+        buyer_name=original.buyer_name,
+        buyer_address=original.buyer_address,
+        buyer_email=original.buyer_email,
+        client_name=original.client_name,
+        client_email=original.client_email,
+        currency=original.currency,
+        due_date=original.due_date,
+        notes=original.notes,
+        subtotal=original.subtotal,
+        tax_total=original.tax_total,
+        grand_total=original.grand_total,
+        status="draft",
+    )
+    db.add(imported)
+    db.flush()
+
+    for item in original_items:
+        db.add(LineItem(
+            invoice_id=imported.invoice_id,
+            item_number=item.item_number,
+            description=item.description,
+            quantity=item.quantity,
+            unit_price=item.unit_price,
+            tax_rate=item.tax_rate,
+            line_total=item.line_total,
+        ))
+
+    import_token.used_at = datetime.now(timezone.utc)
+    import_token.imported_by = current_user.user_id if current_user else None
+
+    log_audit(db, "invoice", imported.invoice_id, "imported",
+              changed_by=current_user.user_id if current_user else None,
+              changes={"source_invoice_id": original.invoice_id})
+    db.commit()
+    db.refresh(imported)
+    return imported
 
 
 @router.get("/fetch/{invoice_id}")
@@ -323,12 +534,18 @@ def get_invoice(
 
 
 @router.put("/update/{invoice_id}", response_model=InvoiceResponse)
-def update_invoice(invoice_id: str, updates: InvoiceUpdate, db: Session = Depends(get_db)):
+def update_invoice(
+    invoice_id: str,
+    updates: InvoiceUpdate,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     update_data = updates.model_dump(exclude_unset=True)
+    old_values = {k: str(getattr(invoice, k)) for k in update_data}
     for field, value in update_data.items():
         setattr(invoice, field, value)
 
@@ -342,17 +559,26 @@ def update_invoice(invoice_id: str, updates: InvoiceUpdate, db: Session = Depend
     if "client_email" in update_data:
         invoice.buyer_email = invoice.client_email
 
+    log_audit(db, "invoice", invoice_id, "update",
+              changed_by=current_user.user_id if current_user else None,
+              changes={k: {"old": old_values[k], "new": str(update_data[k])} for k in update_data})
     db.commit()
     db.refresh(invoice)
     return invoice
 
 
 @router.delete("/delete/{invoice_id}", status_code=200)
-def delete_invoice(invoice_id: str, db: Session = Depends(get_db)):
+def delete_invoice(
+    invoice_id: str,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
+    log_audit(db, "invoice", invoice_id, "delete",
+              changed_by=current_user.user_id if current_user else None)
     db.delete(invoice)
     db.commit()
     return {"message": f"Invoice {invoice_id} deleted successfully"}

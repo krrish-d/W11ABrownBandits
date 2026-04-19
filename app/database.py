@@ -22,38 +22,52 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+def _add_column_if_missing(conn, table: str, col: str, ddl: str, is_pg: bool) -> None:
+    if is_pg:
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {ddl}"))
+    else:
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
+
+
 def ensure_schema_compatibility():
     """
     Add newer columns when running against an older SQLite DB file.
     This keeps local development data usable without manual migration steps.
+    New *tables* are handled by Base.metadata.create_all; only column
+    additions to pre-existing tables need to be listed here.
     """
     inspector = inspect(engine)
-    if "invoices" in inspector.get_table_names():
+    existing_tables = set(inspector.get_table_names())
+    is_pg = DATABASE_URL.startswith("postgresql")
+
+    # ---- invoices table ----
+    if "invoices" in existing_tables:
         invoice_columns = {col["name"] for col in inspector.get_columns("invoices")}
         invoice_additions = {
-            "seller_name": "TEXT NOT NULL DEFAULT ''",
-            "seller_address": "TEXT NOT NULL DEFAULT ''",
-            "seller_email": "TEXT NOT NULL DEFAULT ''",
-            "buyer_name": "TEXT NOT NULL DEFAULT ''",
+            "seller_name":   "TEXT NOT NULL DEFAULT ''",
+            "seller_address":"TEXT NOT NULL DEFAULT ''",
+            "seller_email":  "TEXT NOT NULL DEFAULT ''",
+            "buyer_name":    "TEXT NOT NULL DEFAULT ''",
             "buyer_address": "TEXT NOT NULL DEFAULT ''",
-            "buyer_email": "TEXT NOT NULL DEFAULT ''",
+            "buyer_email":   "TEXT NOT NULL DEFAULT ''",
+            # New columns added in the expanded feature set
+            "owner_id":      "TEXT",
+            "template_id":   "TEXT",
         }
         with engine.begin() as conn:
             for col, ddl in invoice_additions.items():
                 if col not in invoice_columns:
-                    if DATABASE_URL.startswith("postgresql"):
-                        conn.execute(text(f"ALTER TABLE invoices ADD COLUMN IF NOT EXISTS {col} {ddl}"))
-                    else:
-                        conn.execute(text(f"ALTER TABLE invoices ADD COLUMN {col} {ddl}"))
+                    _add_column_if_missing(conn, "invoices", col, ddl, is_pg)
 
-    if "line_items" in inspector.get_table_names():
+    # ---- line_items table ----
+    if "line_items" in existing_tables:
         line_item_columns = {col["name"] for col in inspector.get_columns("line_items")}
         if "item_number" not in line_item_columns:
             with engine.begin() as conn:
-                if DATABASE_URL.startswith("postgresql"):
-                    conn.execute(text("ALTER TABLE line_items ADD COLUMN IF NOT EXISTS item_number TEXT NOT NULL DEFAULT ''"))
-                else:
-                    conn.execute(text("ALTER TABLE line_items ADD COLUMN item_number TEXT NOT NULL DEFAULT ''"))
+                _add_column_if_missing(
+                    conn, "line_items", "item_number",
+                    "TEXT NOT NULL DEFAULT ''", is_pg
+                )
 
 def get_db():
     db = SessionLocal()
