@@ -12,30 +12,14 @@ VALID_UBL_XML = """<?xml version='1.0' encoding='UTF-8'?>
 </Invoice>"""
 
 
-class DummySMTP:
-    def __init__(self, *_args, **_kwargs):
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def starttls(self):
-        return None
-
-    def login(self, *_args, **_kwargs):
-        return None
-
-    def send_message(self, *_args, **_kwargs):
-        return None
+def dummy_resend_send(*_args, **_kwargs):
+    return {"id": "email_mock_123"}
 
 
 def test_communicate_send_success(monkeypatch):
-    monkeypatch.setenv("GMAIL_USERNAME", "sender@example.com")
-    monkeypatch.setenv("GMAIL_APP_PASSWORD", "app-password")
-    monkeypatch.setattr("app.services.communicate.smtplib.SMTP", DummySMTP)
+    monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+    monkeypatch.setenv("COMMUNICATION_FROM_EMAIL", "sender@example.com")
+    monkeypatch.setattr("app.services.communicate.resend.Emails.send", dummy_resend_send)
 
     response = client.post("/communicate/send", json={
         "invoice_xml": VALID_UBL_XML,
@@ -63,8 +47,8 @@ def test_communicate_health_check():
 
 
 def test_communicate_send_invalid_xml(monkeypatch):
-    monkeypatch.setenv("GMAIL_USERNAME", "sender@example.com")
-    monkeypatch.setenv("GMAIL_APP_PASSWORD", "app-password")
+    monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+    monkeypatch.setenv("COMMUNICATION_FROM_EMAIL", "sender@example.com")
 
     response = client.post("/communicate/send", json={
         "invoice_xml": "<not valid xml",

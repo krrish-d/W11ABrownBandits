@@ -1,8 +1,8 @@
+import base64
 import os
-import smtplib
 from datetime import datetime, timezone
-from email.message import EmailMessage
 from lxml import etree
+import resend
 
 
 CBC = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
@@ -25,38 +25,33 @@ def extract_invoice_id(invoice_xml: str) -> str:
 
 
 # -------------------------------------------------------
-# MAIN: Send invoice XML via Gmail SMTP
+# MAIN: Send invoice XML via Resend
 # -------------------------------------------------------
 def send_invoice_email(invoice_xml: str, recipient_email: str) -> dict:
     invoice_id = extract_invoice_id(invoice_xml)
 
-    smtp_host = os.getenv("GMAIL_SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.getenv("GMAIL_SMTP_PORT", "587"))
-    gmail_username = os.getenv("GMAIL_USERNAME")
-    gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
+    resend_api_key = os.getenv("RESEND_API_KEY")
+    sender_email = os.getenv("COMMUNICATION_FROM_EMAIL")
     sender_name = os.getenv("COMMUNICATION_SENDER_NAME", "E-Invoice API")
 
-    if not gmail_username or not gmail_app_password:
-        raise ValueError("Missing Gmail SMTP credentials. Set GMAIL_USERNAME and GMAIL_APP_PASSWORD")
-
-    message = EmailMessage()
-    message["Subject"] = f"Invoice {invoice_id}"
-    message["From"] = f"{sender_name} <{gmail_username}>"
-    message["To"] = recipient_email
-    message.set_content("Please find the attached UBL XML invoice.")
-    message.add_attachment(
-        invoice_xml.encode("utf-8"),
-        maintype="application",
-        subtype="xml",
-        filename=f"{invoice_id}.xml"
-    )
+    if not resend_api_key or not sender_email:
+        raise ValueError("Missing Resend credentials. Set RESEND_API_KEY and COMMUNICATION_FROM_EMAIL")
 
     try:
-        with smtplib.SMTP(smtp_host, smtp_port) as smtp:
-            smtp.starttls()
-            smtp.login(gmail_username, gmail_app_password)
-            smtp.send_message(message)
-    except smtplib.SMTPException as e:
+        resend.api_key = resend_api_key
+        resend.Emails.send({
+            "from": f"{sender_name} <{sender_email}>",
+            "to": [recipient_email],
+            "subject": f"Invoice {invoice_id}",
+            "text": "Please find the attached UBL XML invoice.",
+            "attachments": [
+                {
+                    "filename": f"{invoice_id}.xml",
+                    "content": base64.b64encode(invoice_xml.encode("utf-8")).decode("utf-8"),
+                }
+            ],
+        })
+    except Exception as e:
         raise RuntimeError(f"Failed to send invoice email: {e}")
 
     sent_at = datetime.now(timezone.utc)

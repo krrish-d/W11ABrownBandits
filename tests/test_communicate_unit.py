@@ -30,8 +30,8 @@ def test_extract_invoice_id_missing_id():
 
 
 def test_send_invoice_email_missing_credentials(monkeypatch):
-    monkeypatch.delenv("GMAIL_USERNAME", raising=False)
-    monkeypatch.delenv("GMAIL_APP_PASSWORD", raising=False)
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    monkeypatch.delenv("COMMUNICATION_FROM_EMAIL", raising=False)
 
-    with pytest.raises(ValueError, match="Missing Gmail SMTP credentials"):
+    with pytest.raises(ValueError, match="Missing Resend credentials"):
         send_invoice_email(VALID_UBL_XML, "recipient@example.com")
