@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Search } from "lucide-react";
-import { fetchInvoices, getApiError, sendInvoiceWithImportLink } from "@/lib/api";
+import { Search, Trash2 } from "lucide-react";
+import { fetchInvoices, getApiError, removeInvoice, sendInvoiceWithImportLink } from "@/lib/api";
 import type { Invoice } from "@/lib/types";
 import { PageTransition } from "@/components/page-transition";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +24,8 @@ export default function InvoicesPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [sendState, setSendState] = useState<SendState | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -38,6 +40,19 @@ export default function InvoicesPage() {
       .catch((e) => setError(getApiError(e)))
       .finally(() => setLoading(false));
   }, [query, status, sortBy, sortOrder]);
+
+  async function handleDelete(invoiceId: string) {
+    try {
+      setDeletingId(invoiceId);
+      await removeInvoice(invoiceId);
+      setInvoices((prev) => prev.filter((inv) => inv.invoice_id !== invoiceId));
+    } catch (e) {
+      setError(getApiError(e));
+    } finally {
+      setDeletingId(null);
+      setConfirmDeleteId(null);
+    }
+  }
 
   return (
     <PageTransition>
@@ -143,6 +158,37 @@ export default function InvoicesPage() {
                           >
                             Send
                           </Button>
+                          {confirmDeleteId === invoice.invoice_id ? (
+                            <>
+                              <Button
+                                type="button"
+                                variant="danger"
+                                size="sm"
+                                disabled={deletingId === invoice.invoice_id}
+                                onClick={() => handleDelete(invoice.invoice_id)}
+                              >
+                                {deletingId === invoice.invoice_id ? "Deleting…" : "Confirm delete"}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setConfirmDeleteId(null)}
+                              >
+                                Cancel
+                              </Button>
+                            </>
+                          ) : (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="text-rose-500 hover:bg-rose-50 hover:text-rose-700"
+                              onClick={() => setConfirmDeleteId(invoice.invoice_id)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          )}
                         </div>
                       </div>
 
