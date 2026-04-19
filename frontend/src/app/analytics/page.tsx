@@ -28,17 +28,21 @@ export default function AnalyticsPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    Promise.all([
+    Promise.allSettled([
       fetchDashboardKpis(),
       fetchDashboardTrend(12),
       fetchDashboardTopClients(8),
-    ])
-      .then(([kpiData, trendData, topClientsData]) => {
-        setKpis(kpiData);
-        setTrend(trendData.monthly);
-        setTopClients(topClientsData.top_clients);
-      })
-      .catch((e) => setError(getApiError(e)));
+    ]).then(([kpiRes, trendRes, topClientsRes]) => {
+      if (kpiRes.status === "fulfilled") setKpis(kpiRes.value);
+      if (trendRes.status === "fulfilled") setTrend(trendRes.value.monthly);
+      if (topClientsRes.status === "fulfilled") setTopClients(topClientsRes.value.top_clients);
+
+      // Show the first error encountered (if any)
+      const firstFailure = [kpiRes, trendRes, topClientsRes].find((r) => r.status === "rejected") as
+        | PromiseRejectedResult
+        | undefined;
+      if (firstFailure) setError(getApiError(firstFailure.reason));
+    });
   }, []);
 
   return (

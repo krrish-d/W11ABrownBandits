@@ -42,15 +42,23 @@ export default function InvoiceDetailPage() {
   const [actionMessage, setActionMessage] = useState("");
 
   async function refreshData(invoiceId: string) {
-    const [invoiceData, allLogs, paymentData] = await Promise.all([
+    const [invoiceRes, logsRes, paymentRes] = await Promise.allSettled([
       fetchInvoice(invoiceId, "json") as Promise<Invoice>,
       fetchCommunicationLogs(),
       fetchInvoicePaymentSummary(invoiceId),
     ]);
+
+    if (invoiceRes.status === "rejected") throw invoiceRes.reason;
+    const invoiceData = invoiceRes.value;
     setInvoice(invoiceData);
     setRecipientEmail(invoiceData.buyer_email || invoiceData.client_email || "");
-    setLogs(allLogs.filter((l) => l.invoice_id === invoiceData.invoice_id));
-    setPaymentSummary(paymentData);
+
+    if (logsRes.status === "fulfilled") {
+      setLogs(logsRes.value.filter((l) => l.invoice_id === invoiceData.invoice_id));
+    }
+    if (paymentRes.status === "fulfilled") {
+      setPaymentSummary(paymentRes.value);
+    }
   }
 
   useEffect(() => {

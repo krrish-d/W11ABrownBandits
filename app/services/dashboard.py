@@ -109,21 +109,24 @@ def get_monthly_trend(db: Session, months: int = 12) -> TrendResponse:
             year -= 1
         label = f"{year}-{month:02d}"
         m_start = date(year, month, 1)
-        # last day of month
-        if month == 12:
-            m_end = date(year + 1, 1, 1) - timedelta(days=1)
-        else:
-            m_end = date(year, month + 1, 1) - timedelta(days=1)
+        # First day of the *next* month used as exclusive upper bound so that
+        # timestamps on the last day of the month are not cut off at midnight.
+        next_month = month + 1
+        next_year = year
+        if next_month > 12:
+            next_month = 1
+            next_year += 1
+        m_next = date(next_year, next_month, 1)
 
         invoiced = (
             db.query(func.sum(Invoice.grand_total))
-            .filter(Invoice.created_at >= m_start, Invoice.created_at <= m_end)
+            .filter(Invoice.created_at >= m_start, Invoice.created_at < m_next)
             .scalar()
             or 0.0
         )
         paid = (
             db.query(func.sum(Payment.amount))
-            .filter(Payment.payment_date >= m_start, Payment.payment_date <= m_end)
+            .filter(Payment.payment_date >= m_start, Payment.payment_date < m_next)
             .scalar()
             or 0.0
         )
@@ -132,7 +135,7 @@ def get_monthly_trend(db: Session, months: int = 12) -> TrendResponse:
             .filter(
                 Invoice.status == "overdue",
                 Invoice.due_date >= m_start,
-                Invoice.due_date <= m_end,
+                Invoice.due_date < m_next,
             )
             .scalar()
             or 0.0

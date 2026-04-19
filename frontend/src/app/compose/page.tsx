@@ -7,6 +7,7 @@ import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Upload } from "lucide-react";
 import {
+  API_BASE,
   createInvoice,
   fetchClients,
   fetchInvoice,
@@ -224,7 +225,7 @@ export default function ComposePage() {
 
   async function downloadInvoice(invoiceId: string, format: string) {
     const token = getStoredToken();
-    const resp = await fetch(`/api/invoice/fetch/${invoiceId}?format=${format}`, {
+    const resp = await fetch(`${API_BASE}/invoice/fetch/${invoiceId}?format=${format}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!resp.ok) throw new Error("Download failed.");
