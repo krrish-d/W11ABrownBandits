@@ -1,14 +1,23 @@
+import secrets
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.communication import CommunicationLog
+from app.models.invoice import Invoice, LineItem
+from app.models.invoice_import import InvoiceImportToken
 from app.schemas.communication import (
     CommunicationRequest,
     CommunicationLogResponse,
     CommunicationSendResponse,
 )
-from app.services.communicate import send_invoice_email
+from app.services.communicate import (
+    send_invoice_email,
+    send_invoice_with_import_link,
+    send_payment_reminder,
+)
 
 router = APIRouter(
     prefix="/communicate",
@@ -17,7 +26,7 @@ router = APIRouter(
 
 
 # -------------------------------------------------------
-# POST /communicate/send — Send UBL XML invoice by email
+# POST /communicate/send — Send UBL XML invoice by email (original)
 # -------------------------------------------------------
 @router.post("/send", response_model=CommunicationSendResponse)
 def send_invoice(request: CommunicationRequest, db: Session = Depends(get_db)):
@@ -40,6 +49,105 @@ def send_invoice(request: CommunicationRequest, db: Session = Depends(get_db)):
     db.commit()
 
     return delivery_confirmation
+
+
+# -------------------------------------------------------
+# POST /communicate/send-invoice/{invoice_id}
+#   Send a rich HTML email with an "Add to My Library" import button.
+# -------------------------------------------------------
+@router.post("/send-invoice/{invoice_id}", status_code=200)
+def send_invoice_with_link(
+    invoice_id: str,
+    recipient_email: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Fetches the invoice from the database, generates a one-time signed import
+    token, sends a styled HTML email to *recipient_email* that contains an
+    'Add to My Invoice Library' button, and logs the communication.
+
+    The import token is valid for 7 days and can only be used once.
+    """
+    invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    items = db.query(LineItem).filter(LineItem.invoice_id == invoice_id).all()
+
+    # Generate and persist the import token
+    token_value = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    import_token = InvoiceImportToken(
+        invoice_id=invoice_id,
+        token=token_value,
+        expires_at=expires_at,
+    )
+    db.add(import_token)
+    db.flush()  # get token_id persisted before sending
+
+    try:
+        result = send_invoice_with_import_link(
+            invoice=invoice,
+            items=items,
+            recipient_email=recipient_email,
+            import_token=token_value,
+        )
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Update invoice status to "sent"
+    if invoice.status == "draft":
+        invoice.status = "sent"
+
+    log = CommunicationLog(
+        invoice_id=invoice_id,
+        recipient_email=recipient_email,
+        delivery_status="sent",
+    )
+    db.add(log)
+    db.commit()
+
+    return {
+        "message": "Invoice email sent successfully",
+        "invoice_id": invoice_id,
+        "recipient_email": recipient_email,
+        "import_url": result.get("import_url"),
+        "token_expires_at": expires_at.isoformat(),
+    }
+
+
+# -------------------------------------------------------
+# POST /communicate/remind/{invoice_id}
+#   Manually send a payment reminder for an overdue/unpaid invoice.
+# -------------------------------------------------------
+@router.post("/remind/{invoice_id}", status_code=200)
+def send_reminder(invoice_id: str, db: Session = Depends(get_db)):
+    invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if not invoice.buyer_email:
+        raise HTTPException(status_code=422, detail="Invoice has no buyer email")
+
+    try:
+        send_payment_reminder(invoice)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    log = CommunicationLog(
+        invoice_id=invoice_id,
+        recipient_email=invoice.buyer_email,
+        delivery_status="reminder",
+    )
+    db.add(log)
+    db.commit()
+
+    return {"message": "Payment reminder sent", "invoice_id": invoice_id, "recipient": invoice.buyer_email}
 
 
 # -------------------------------------------------------

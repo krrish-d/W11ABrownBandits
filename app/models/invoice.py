@@ -9,7 +9,12 @@ class Invoice(Base):
 
     invoice_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     invoice_number = Column(String, unique=True, nullable=False)
+    # draft | sent | viewed | paid | overdue | cancelled
     status = Column(String, default="draft")
+    # Optional: user who owns/created this invoice
+    owner_id = Column(String, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    # Optional: template used when generating PDFs
+    template_id = Column(String, ForeignKey("invoice_templates.template_id", ondelete="SET NULL"), nullable=True)
     seller_name = Column(String, nullable=False)
     seller_address = Column(String, nullable=False)
     seller_email = Column(String, nullable=False)
