@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, FileText, Home, LogOut, PencilLine, ReceiptText, Users } from "lucide-react";
+import { useEffect, useState } from "react";
+import { BarChart3, FileText, Home, LogOut, PencilLine, ReceiptText, Users, Wand2, ShieldCheck, Repeat, Palette, ClipboardList } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { clearStoredToken, getStoredToken } from "@/lib/api";
+import { clearStoredToken, fetchMe, getStoredToken } from "@/lib/api";
+import { ThemeSwitcher } from "@/components/theme-switcher";
 
 const links = [
   { href: "/", label: "Dashboard", icon: Home },
@@ -13,16 +15,71 @@ const links = [
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/payments", label: "Payments", icon: ReceiptText },
+  { href: "/transform", label: "Transform", icon: Wand2 },
+  { href: "/validate", label: "Validate", icon: ShieldCheck },
+  { href: "/templates", label: "Templates", icon: Palette },
+  { href: "/recurring", label: "Recurring", icon: Repeat },
+  { href: "/audit", label: "Audit", icon: ClipboardList },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() || "/";
+  const [authChecked, setAuthChecked] = useState(false);
   const authed = !!getStoredToken();
+  const isPublicRoute = pathname === "/login";
+
+  // Restore saved theme on mount to avoid flash
+  useEffect(() => {
+    const saved = localStorage.getItem("invoiceflow_theme") ?? "lavender";
+    if (saved && saved !== "lavender") {
+      document.documentElement.setAttribute("data-theme", saved);
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    async function ensureSession() {
+      setAuthChecked(false);
+
+      if (isPublicRoute) {
+        if (active) setAuthChecked(true);
+        return;
+      }
+
+      const token = getStoredToken();
+      if (!token) {
+        window.location.href = "/login";
+        return;
+      }
+
+      try {
+        await fetchMe();
+        if (active) setAuthChecked(true);
+      } catch {
+        clearStoredToken();
+        window.location.href = "/login";
+      }
+    }
+
+    ensureSession();
+    return () => {
+      active = false;
+    };
+  }, [isPublicRoute, pathname]);
+
+  if (!isPublicRoute && !authChecked) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <p className="text-sm text-muted-foreground">Checking session...</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
       <header className="border-b border-border bg-card/80 backdrop-blur md:hidden">
-        <div className="mx-auto max-w-7xl px-4 py-3 sm:px-6">
+        <div className="w-full px-4 py-3 sm:px-6">
           <div className="mb-3 flex items-center justify-between">
             <div>
               <h1 className="text-base font-semibold tracking-tight">InvoiceFlow</h1>
@@ -69,8 +126,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </nav>
         </div>
       </header>
-      <div className="mx-auto flex max-w-7xl gap-6 px-4 py-8 sm:px-6 lg:px-8">
-        <aside className="hidden w-64 shrink-0 rounded-2xl border border-border bg-card p-4 shadow-soft md:block">
+      <div className="flex flex-1 gap-0 overflow-hidden">
+        <aside className="hidden w-60 shrink-0 border-r border-border bg-card p-4 md:flex md:flex-col md:overflow-y-auto">
           <h1 className="mb-3 px-2 text-xl font-semibold tracking-tight">InvoiceFlow</h1>
           <p className="mb-6 px-2 text-xs text-muted-foreground">Clean invoicing with modern automation</p>
           <nav className="space-y-2">
@@ -92,7 +149,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               );
             })}
           </nav>
-          <div className="mt-6 border-t border-border pt-4">
+          <ThemeSwitcher />
+          <div className="mt-4 border-t border-border pt-4">
             {authed ? (
               <button
                 type="button"
@@ -116,7 +174,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             )}
           </div>
         </aside>
-        <main className="min-w-0 flex-1">{children}</main>
+        <main className="min-w-0 flex-1 overflow-y-auto p-6 md:p-8">{children}</main>
       </div>
     </div>
   );

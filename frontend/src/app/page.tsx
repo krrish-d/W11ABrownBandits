@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, ShieldCheck, Wand2 } from "lucide-react";
 import {
   fetchDashboardKpis,
   fetchDashboardNeedsAttention,
@@ -102,6 +102,31 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
         </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Validation & transformation</CardTitle>
+            <CardDescription>Quick access to format conversion and XML rule checks.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-3 md:grid-cols-2">
+              <Link href="/transform" className="rounded-xl border border-border p-4 transition hover:bg-cream">
+                <p className="flex items-center gap-2 font-medium">
+                  <Wand2 className="h-4 w-4" />
+                  Transform invoice formats
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">Convert JSON, XML, UBL, CSV and PDF.</p>
+              </Link>
+              <Link href="/validate" className="rounded-xl border border-border p-4 transition hover:bg-cream">
+                <p className="flex items-center gap-2 font-medium">
+                  <ShieldCheck className="h-4 w-4" />
+                  Validate XML rules
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">Run UBL, PEPPOL and Australian checks.</p>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader>
