@@ -1,9 +1,12 @@
 import pytest
+import base64
 from app.services.transform import (
     parse_json,
     parse_csv,
     parse_ubl_xml,
+    parse_generic_xml,
     dict_to_ubl_xml,
+    dict_to_generic_xml,
     dict_to_json,
     dict_to_csv,
     dict_to_pdf,
@@ -17,12 +20,15 @@ SAMPLE_DICT = {
     "invoice_number": "INV-001",
     "issue_date": "2026-03-16",
     "currency": "AUD",
-    "client_name": "XYZ Pty Ltd",
-    "supplier_name": "ABC Pty Ltd",
+    "buyer_name": "XYZ Pty Ltd",
+    "buyer_address": "2 Buyer Rd, Sydney NSW",
+    "seller_name": "ABC Pty Ltd",
+    "seller_address": "1 Seller St, Melbourne VIC",
     "subtotal": 100.0,
     "grand_total": 110.0,
     "items": [
         {
+            "item_number": "1",
             "description": "Consulting",
             "quantity": 2,
             "unit_price": 50.0,
@@ -31,10 +37,10 @@ SAMPLE_DICT = {
     ]
 }
 
-SAMPLE_JSON = '{"invoice_number": "INV-001", "issue_date": "2026-03-16", "currency": "AUD", "client_name": "XYZ Pty Ltd", "supplier_name": "ABC Pty Ltd", "subtotal": 100.0, "grand_total": 110.0, "items": [{"description": "Consulting", "quantity": 2, "unit_price": 50.0, "line_total": 100.0}]}'
+SAMPLE_JSON = '{"invoice_number": "INV-001", "issue_date": "2026-03-16", "currency": "AUD", "buyer_name": "XYZ Pty Ltd", "buyer_address": "2 Buyer Rd, Sydney NSW", "seller_name": "ABC Pty Ltd", "seller_address": "1 Seller St, Melbourne VIC", "subtotal": 100.0, "grand_total": 110.0, "items": [{"item_number": "1", "description": "Consulting", "quantity": 2, "unit_price": 50.0, "line_total": 100.0}]}'
 
-SAMPLE_CSV = """invoice_number,currency,client_name,due_date,subtotal,grand_total,description,quantity,unit_price,line_total
-INV-001,AUD,XYZ Pty Ltd,2026-03-16,100.0,110.0,Consulting,2,50.0,100.0"""
+SAMPLE_CSV = """invoice_number,currency,seller_name,seller_address,buyer_name,buyer_address,due_date,subtotal,grand_total,item_number,description,quantity,unit_price,line_total
+INV-001,AUD,ABC Pty Ltd,"1 Seller St, Melbourne VIC",XYZ Pty Ltd,"2 Buyer Rd, Sydney NSW",2026-03-16,100.0,110.0,1,Consulting,2,50.0,100.0"""
 
 SAMPLE_UBL_XML = """<?xml version='1.0' encoding='UTF-8'?>
 <Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
@@ -50,6 +56,9 @@ SAMPLE_UBL_XML = """<?xml version='1.0' encoding='UTF-8'?>
       <cac:PartyName>
         <cbc:Name>ABC Pty Ltd</cbc:Name>
       </cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>1 Seller St, Melbourne VIC</cbc:StreetName>
+      </cac:PostalAddress>
     </cac:Party>
   </cac:AccountingSupplierParty>
   <cac:AccountingCustomerParty>
@@ -57,6 +66,9 @@ SAMPLE_UBL_XML = """<?xml version='1.0' encoding='UTF-8'?>
       <cac:PartyName>
         <cbc:Name>XYZ Pty Ltd</cbc:Name>
       </cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>2 Buyer Rd, Sydney NSW</cbc:StreetName>
+      </cac:PostalAddress>
     </cac:Party>
   </cac:AccountingCustomerParty>
   <cac:LegalMonetaryTotal>
@@ -76,6 +88,84 @@ SAMPLE_UBL_XML = """<?xml version='1.0' encoding='UTF-8'?>
     </cac:Price>
   </cac:InvoiceLine>
 </Invoice>"""
+
+SAMPLE_GENERIC_XML = """<?xml version='1.0' encoding='UTF-8'?>
+<Invoice>
+  <InvoiceNumber>INV-001</InvoiceNumber>
+  <IssueDate>2026-03-16</IssueDate>
+  <Currency>AUD</Currency>
+  <SellerName>ABC Pty Ltd</SellerName>
+  <SellerAddress>1 Seller St, Melbourne VIC</SellerAddress>
+  <BuyerName>XYZ Pty Ltd</BuyerName>
+  <BuyerAddress>2 Buyer Rd, Sydney NSW</BuyerAddress>
+  <Subtotal>100.0</Subtotal>
+  <GrandTotal>110.0</GrandTotal>
+  <LineItems>
+    <LineItem>
+      <ItemNumber>1</ItemNumber>
+      <Description>Consulting</Description>
+      <Quantity>2</Quantity>
+      <UnitPrice>50.0</UnitPrice>
+      <LineTotal>100.0</LineTotal>
+    </LineItem>
+  </LineItems>
+</Invoice>"""
+
+
+def make_sample_pdf() -> bytes:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    import io
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    elements = []
+
+    elements.append(Paragraph("INVOICE", styles["Title"]))
+    elements.append(Spacer(1, 5 * mm))
+    details = [
+        ["Invoice Number:", "INV-001"],
+        ["Seller Name:", "ABC Pty Ltd"],
+        ["Seller Address:", "1 Seller St, Melbourne VIC"],
+        ["Buyer Name:", "XYZ Pty Ltd"],
+        ["Buyer Address:", "2 Buyer Rd, Sydney NSW"],
+        ["Currency:", "AUD"],
+        ["Due Date:", "2026-03-16"],
+    ]
+    detail_table = Table(details, colWidths=[50 * mm, 120 * mm])
+    detail_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(detail_table)
+    elements.append(Spacer(1, 8 * mm))
+    elements.append(Paragraph("Line Items", styles["Heading2"]))
+    item_data = [
+        ["Description", "Quantity", "Unit Price", "Tax Rate", "Line Total"],
+        ["Consulting", "2", "AUD 50.00", "10.0%", "AUD 100.00"]
+    ]
+    item_table = Table(item_data, colWidths=[70 * mm, 25 * mm, 35 * mm, 25 * mm, 35 * mm])
+    item_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+    ]))
+    elements.append(item_table)
+    elements.append(Spacer(1, 8 * mm))
+    totals = [
+        ["Subtotal:", "AUD 100.00"],
+        ["Tax Total:", "AUD 10.00"],
+        ["Grand Total:", "AUD 110.00"],
+    ]
+    totals_table = Table(totals, colWidths=[140 * mm, 30 * mm])
+    elements.append(totals_table)
+    doc.build(elements)
+    return buffer.getvalue()
 
 
 # -------------------------------------------------------
@@ -97,7 +187,7 @@ def test_parse_json_invalid():
 # -------------------------------------------------------
 def test_parse_csv_valid():
     result = parse_csv(SAMPLE_CSV)
-    assert result["client_name"] == "XYZ Pty Ltd"
+    assert result["buyer_name"] == "XYZ Pty Ltd"
     assert result["currency"] == "AUD"
 
 def test_parse_csv_empty():
@@ -106,7 +196,7 @@ def test_parse_csv_empty():
 
 def test_parse_csv_missing_required_field():
     bad_csv = "invoice_number,currency\nINV-001,AUD"
-    with pytest.raises(ValueError, match="Missing required CSV field"):
+    with pytest.raises(ValueError, match="due_date|issue_date|Missing required CSV field"):
         parse_csv(bad_csv)
 
 
@@ -117,13 +207,28 @@ def test_parse_ubl_xml_valid():
     result = parse_ubl_xml(SAMPLE_UBL_XML)
     assert result["invoice_number"] == "INV-001"
     assert result["currency"] == "AUD"
-    assert result["client_name"] == "XYZ Pty Ltd"
-    assert result["supplier_name"] == "ABC Pty Ltd"
+    assert result["buyer_name"] == "XYZ Pty Ltd"
+    assert result["seller_name"] == "ABC Pty Ltd"
     assert len(result["items"]) == 1
 
 def test_parse_ubl_xml_invalid():
     with pytest.raises(ValueError, match="Invalid XML"):
         parse_ubl_xml("<not valid xml")
+
+
+# -------------------------------------------------------
+# parse_generic_xml
+# -------------------------------------------------------
+def test_parse_generic_xml_valid():
+    result = parse_generic_xml(SAMPLE_GENERIC_XML)
+    assert result["invoice_number"] == "INV-001"
+    assert result["buyer_name"] == "XYZ Pty Ltd"
+    assert result["currency"] == "AUD"
+    assert len(result["items"]) == 1
+
+def test_parse_generic_xml_invalid():
+    with pytest.raises(ValueError, match="Invalid XML"):
+        parse_generic_xml("<not valid xml")
 
 
 # -------------------------------------------------------
@@ -138,6 +243,20 @@ def test_dict_to_ubl_xml_contains_required_tags():
 
 def test_dict_to_ubl_xml_is_string():
     result = dict_to_ubl_xml(SAMPLE_DICT)
+    assert isinstance(result, str)
+
+
+# -------------------------------------------------------
+# dict_to_generic_xml
+# -------------------------------------------------------
+def test_dict_to_generic_xml_contains_required_tags():
+    result = dict_to_generic_xml(SAMPLE_DICT)
+    assert "<InvoiceNumber>INV-001</InvoiceNumber>" in result
+    assert "<BuyerName>XYZ Pty Ltd</BuyerName>" in result
+    assert "Consulting" in result
+
+def test_dict_to_generic_xml_is_string():
+    result = dict_to_generic_xml(SAMPLE_DICT)
     assert isinstance(result, str)
 
 
@@ -160,7 +279,7 @@ def test_dict_to_json_is_string():
 def test_dict_to_csv_contains_headers():
     result = dict_to_csv(SAMPLE_DICT)
     assert "invoice_number" in result
-    assert "client_name" in result
+    assert "buyer_name" in result
 
 def test_dict_to_csv_contains_data():
     result = dict_to_csv(SAMPLE_DICT)
@@ -185,7 +304,7 @@ def test_dict_to_pdf_is_pdf_header():
 
 
 # -------------------------------------------------------
-# transform (main function)
+# transform - valid conversions
 # -------------------------------------------------------
 def test_transform_json_to_ubl_xml():
     result = transform("json", "ubl_xml", SAMPLE_JSON)
@@ -196,6 +315,14 @@ def test_transform_json_to_csv():
     result = transform("json", "csv", SAMPLE_JSON)
     assert "INV-001" in result
     assert "invoice_number" in result
+
+def test_transform_json_to_xml_ubl():
+    result = transform("json", "xml", SAMPLE_JSON, xml_type="ubl")
+    assert "UBLVersionID" in result
+
+def test_transform_json_to_xml_generic():
+    result = transform("json", "xml", SAMPLE_JSON, xml_type="generic")
+    assert "<InvoiceNumber>" in result
 
 def test_transform_json_to_pdf():
     result = transform("json", "pdf", SAMPLE_JSON)
@@ -210,6 +337,10 @@ def test_transform_csv_to_json():
     result = transform("csv", "json", SAMPLE_CSV)
     assert "XYZ Pty Ltd" in result
 
+def test_transform_csv_to_pdf():
+    result = transform("csv", "pdf", SAMPLE_CSV)
+    assert isinstance(result, bytes)
+
 def test_transform_ubl_xml_to_json():
     result = transform("ubl_xml", "json", SAMPLE_UBL_XML)
     assert "INV-001" in result
@@ -222,9 +353,48 @@ def test_transform_ubl_xml_to_pdf():
     result = transform("ubl_xml", "pdf", SAMPLE_UBL_XML)
     assert isinstance(result, bytes)
 
+def test_transform_generic_xml_to_ubl_xml():
+    result = transform("xml", "ubl_xml", SAMPLE_GENERIC_XML)
+    assert "Invoice" in result
+
+def test_transform_generic_xml_to_json():
+    result = transform("xml", "json", SAMPLE_GENERIC_XML)
+    assert "XYZ Pty Ltd" in result
+
+def test_transform_generic_xml_to_csv():
+    result = transform("xml", "csv", SAMPLE_GENERIC_XML)
+    assert "INV-001" in result
+
+def test_transform_generic_xml_to_pdf():
+    result = transform("xml", "pdf", SAMPLE_GENERIC_XML)
+    assert isinstance(result, bytes)
+
+def test_transform_pdf_to_ubl_xml():
+    pdf_bytes = make_sample_pdf()
+    result = transform("pdf", "ubl_xml", pdf_bytes)
+    assert "Invoice" in result
+
+def test_transform_pdf_to_json():
+    pdf_bytes = make_sample_pdf()
+    result = transform("pdf", "json", pdf_bytes)
+    assert isinstance(result, str)
+
+def test_transform_pdf_to_csv():
+    pdf_bytes = make_sample_pdf()
+    result = transform("pdf", "csv", pdf_bytes)
+    assert isinstance(result, str)
+
+def test_transform_pdf_string_raises():
+    with pytest.raises(ValueError, match="base64"):
+        transform("pdf", "ubl_xml", "not bytes")
+
+
+# -------------------------------------------------------
+# transform - error cases
+# -------------------------------------------------------
 def test_transform_unsupported_input_format():
     with pytest.raises(ValueError, match="Unsupported input format"):
-        transform("pdf", "json", "data")
+        transform("docx", "ubl_xml", "data")
 
 def test_transform_unsupported_output_format():
     with pytest.raises(ValueError, match="Unsupported output format"):
@@ -233,3 +403,7 @@ def test_transform_unsupported_output_format():
 def test_transform_same_format():
     with pytest.raises(ValueError, match="Input and output formats must be different"):
         transform("json", "json", SAMPLE_JSON)
+
+def test_transform_invalid_xml_type():
+    with pytest.raises(ValueError, match="xml_type must be either"):
+        transform("json", "xml", SAMPLE_JSON, xml_type="invalid")

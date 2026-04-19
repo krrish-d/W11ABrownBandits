@@ -98,7 +98,7 @@ WRONG_TOTALS_XML = """<?xml version='1.0' encoding='UTF-8'?>
 # POST /validate — UBL ruleset (default)
 # -------------------------------------------------------
 def test_validate_valid_invoice_ubl():
-    response = client.post("/validate/", json={
+    response = client.post("/validate", json={
         "invoice_xml": VALID_UBL_XML
     })
     assert response.status_code == 200
@@ -109,7 +109,7 @@ def test_validate_valid_invoice_ubl():
 
 
 def test_validate_invalid_xml():
-    response = client.post("/validate/", json={
+    response = client.post("/validate", json={
         "invoice_xml": "<not valid xml"
     })
     assert response.status_code == 200
@@ -119,7 +119,7 @@ def test_validate_invalid_xml():
 
 
 def test_validate_missing_fields():
-    response = client.post("/validate/", json={
+    response = client.post("/validate", json={
         "invoice_xml": MISSING_FIELDS_XML
     })
     assert response.status_code == 200
@@ -129,7 +129,7 @@ def test_validate_missing_fields():
 
 
 def test_validate_wrong_totals():
-    response = client.post("/validate/", json={
+    response = client.post("/validate", json={
         "invoice_xml": WRONG_TOTALS_XML
     })
     assert response.status_code == 200
@@ -141,7 +141,7 @@ def test_validate_wrong_totals():
 # POST /validate — PEPPOL ruleset
 # -------------------------------------------------------
 def test_validate_peppol_ruleset():
-    response = client.post("/validate/", json={
+    response = client.post("/validate", json={
         "invoice_xml": VALID_UBL_XML,
         "ruleset": "peppol"
     })
@@ -152,7 +152,7 @@ def test_validate_peppol_ruleset():
 
 
 def test_validate_peppol_missing_tax_total():
-    response = client.post("/validate/", json={
+    response = client.post("/validate", json={
         "invoice_xml": VALID_UBL_XML,
         "ruleset": "peppol"
     })
@@ -165,7 +165,7 @@ def test_validate_peppol_missing_tax_total():
 # POST /validate — Australian ruleset
 # -------------------------------------------------------
 def test_validate_australian_ruleset():
-    response = client.post("/validate/", json={
+    response = client.post("/validate", json={
         "invoice_xml": VALID_UBL_XML,
         "ruleset": "australian"
     })
@@ -176,7 +176,7 @@ def test_validate_australian_ruleset():
 
 
 def test_validate_australian_missing_abn():
-    response = client.post("/validate/", json={
+    response = client.post("/validate", json={
         "invoice_xml": VALID_UBL_XML,
         "ruleset": "australian"
     })
@@ -189,7 +189,7 @@ def test_validate_australian_missing_abn():
 # Error cases
 # -------------------------------------------------------
 def test_validate_unsupported_ruleset():
-    response = client.post("/validate/", json={
+    response = client.post("/validate", json={
         "invoice_xml": VALID_UBL_XML,
         "ruleset": "invalid_ruleset"
     })
@@ -198,7 +198,7 @@ def test_validate_unsupported_ruleset():
 
 
 def test_validate_missing_body():
-    response = client.post("/validate/", json={})
+    response = client.post("/validate", json={})
     assert response.status_code == 422
 
 
@@ -213,6 +213,59 @@ def test_get_supported_rulesets():
     assert "ubl" in data["rulesets"]
     assert "peppol" in data["rulesets"]
     assert "australian" in data["rulesets"]
+
+
+# -------------------------------------------------------
+# POST /validate/bulk
+# -------------------------------------------------------
+def test_validate_bulk_valid_invoices():
+    response = client.post("/validate/bulk", json={
+        "invoices": [VALID_UBL_XML, VALID_UBL_XML],
+        "ruleset": "ubl"
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert "results" in data
+    assert len(data["results"]) == 2
+    assert data["results"][0]["index"] == 0
+    assert data["results"][1]["index"] == 1
+    assert data["results"][0]["valid"] is True
+
+
+def test_validate_bulk_mixed_invoices():
+    response = client.post("/validate/bulk", json={
+        "invoices": [VALID_UBL_XML, "<not valid xml"],
+        "ruleset": "ubl"
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["results"]) == 2
+    assert data["results"][0]["valid"] is True
+    assert data["results"][1]["valid"] is False
+
+
+def test_validate_bulk_peppol_ruleset():
+    response = client.post("/validate/bulk", json={
+        "invoices": [VALID_UBL_XML],
+        "ruleset": "peppol"
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["results"][0]["ruleset"] == "peppol"
+
+
+def test_validate_bulk_unsupported_ruleset():
+    response = client.post("/validate/bulk", json={
+        "invoices": [VALID_UBL_XML],
+        "ruleset": "fake"
+    })
+    assert response.status_code == 400
+    assert "Unsupported ruleset" in response.json()["detail"]
+
+
+def test_validate_bulk_missing_body():
+    response = client.post("/validate/bulk", json={})
+    assert response.status_code == 422
 
 
 # -------------------------------------------------------
