@@ -6,6 +6,7 @@ from sqlalchemy import func
 
 from app.models.invoice import Invoice
 from app.models.payment import Payment
+from app.models.user import User
 from app.schemas.dashboard import (
     KPIResponse,
     StatusCounts,
@@ -16,43 +17,72 @@ from app.schemas.dashboard import (
     TopClientEntry,
     TopClientsResponse,
 )
+from app.services.auth import scope_query_to_owner
+
+
+def _scoped_invoice_query(db: Session, current_user: Optional[User]):
+    return scope_query_to_owner(db.query(Invoice), Invoice.owner_id, current_user)
+
+
+def _scoped_payment_query(db: Session, current_user: Optional[User]):
+    """
+    Payments don't carry an owner column directly, so restrict to payments
+    whose parent invoice is owned by the caller.
+    """
+    q = db.query(Payment).join(Invoice, Invoice.invoice_id == Payment.invoice_id)
+    if current_user is not None:
+        return q.filter(Invoice.owner_id == current_user.user_id)
+    return q.filter(Invoice.owner_id.is_(None))
 
 
 # -------------------------------------------------------
 # KPI cards
 # -------------------------------------------------------
 
-def get_kpis(db: Session) -> KPIResponse:
+def get_kpis(db: Session, current_user: Optional[User] = None) -> KPIResponse:
     today = date.today()
     month_start = today.replace(day=1)
 
-    total_invoiced = db.query(func.sum(Invoice.grand_total)).scalar() or 0.0
+    total_invoiced = (
+        _scoped_invoice_query(db, current_user)
+        .with_entities(func.sum(Invoice.grand_total))
+        .scalar()
+        or 0.0
+    )
 
-    # Sum of payments recorded this calendar month
+    # Sum of payments recorded this calendar month (scoped to caller's invoices)
     paid_this_month = (
-        db.query(func.sum(Payment.amount))
+        _scoped_payment_query(db, current_user)
         .filter(Payment.payment_date >= month_start)
+        .with_entities(func.sum(Payment.amount))
         .scalar()
         or 0.0
     )
 
     overdue_amount = (
-        db.query(func.sum(Invoice.grand_total))
+        _scoped_invoice_query(db, current_user)
         .filter(Invoice.status == "overdue")
+        .with_entities(func.sum(Invoice.grand_total))
         .scalar()
         or 0.0
     )
 
-    total_payments_ever = db.query(func.sum(Payment.amount)).scalar() or 0.0
+    total_payments_ever = (
+        _scoped_payment_query(db, current_user)
+        .with_entities(func.sum(Payment.amount))
+        .scalar()
+        or 0.0
+    )
     outstanding_balance = round(total_invoiced - total_payments_ever, 2)
 
     # Average days to payment: difference between invoice created_at and first payment
     avg_days: Optional[float] = None
+    owned_invoices = _scoped_invoice_query(db, current_user).subquery()
     rows = (
-        db.query(Invoice.created_at, func.min(Payment.payment_date))
-        .join(Payment, Payment.invoice_id == Invoice.invoice_id)
-        .filter(Invoice.status == "paid")
-        .group_by(Invoice.invoice_id)
+        db.query(owned_invoices.c.created_at, func.min(Payment.payment_date))
+        .join(Payment, Payment.invoice_id == owned_invoices.c.invoice_id)
+        .filter(owned_invoices.c.status == "paid")
+        .group_by(owned_invoices.c.invoice_id, owned_invoices.c.created_at)
         .all()
     )
     if rows:
@@ -66,7 +96,8 @@ def get_kpis(db: Session) -> KPIResponse:
 
     # Status counts
     raw_counts = (
-        db.query(Invoice.status, func.count(Invoice.invoice_id))
+        _scoped_invoice_query(db, current_user)
+        .with_entities(Invoice.status, func.count(Invoice.invoice_id))
         .group_by(Invoice.status)
         .all()
     )
@@ -79,7 +110,12 @@ def get_kpis(db: Session) -> KPIResponse:
         overdue=count_map.get("overdue", 0),
         cancelled=count_map.get("cancelled", 0),
     )
-    total_invoices = db.query(func.count(Invoice.invoice_id)).scalar() or 0
+    total_invoices = (
+        _scoped_invoice_query(db, current_user)
+        .with_entities(func.count(Invoice.invoice_id))
+        .scalar()
+        or 0
+    )
 
     return KPIResponse(
         total_invoiced_all_time=round(total_invoiced, 2),
@@ -96,7 +132,11 @@ def get_kpis(db: Session) -> KPIResponse:
 # Monthly revenue trend (last N months)
 # -------------------------------------------------------
 
-def get_monthly_trend(db: Session, months: int = 12) -> TrendResponse:
+def get_monthly_trend(
+    db: Session,
+    months: int = 12,
+    current_user: Optional[User] = None,
+) -> TrendResponse:
     today = date.today()
     data: List[MonthlyDataPoint] = []
 
@@ -119,24 +159,27 @@ def get_monthly_trend(db: Session, months: int = 12) -> TrendResponse:
         m_next = date(next_year, next_month, 1)
 
         invoiced = (
-            db.query(func.sum(Invoice.grand_total))
+            _scoped_invoice_query(db, current_user)
             .filter(Invoice.created_at >= m_start, Invoice.created_at < m_next)
+            .with_entities(func.sum(Invoice.grand_total))
             .scalar()
             or 0.0
         )
         paid = (
-            db.query(func.sum(Payment.amount))
+            _scoped_payment_query(db, current_user)
             .filter(Payment.payment_date >= m_start, Payment.payment_date < m_next)
+            .with_entities(func.sum(Payment.amount))
             .scalar()
             or 0.0
         )
         overdue = (
-            db.query(func.sum(Invoice.grand_total))
+            _scoped_invoice_query(db, current_user)
             .filter(
                 Invoice.status == "overdue",
                 Invoice.due_date >= m_start,
                 Invoice.due_date < m_next,
             )
+            .with_entities(func.sum(Invoice.grand_total))
             .scalar()
             or 0.0
         )
@@ -154,12 +197,15 @@ def get_monthly_trend(db: Session, months: int = 12) -> TrendResponse:
 # Needs attention panel
 # -------------------------------------------------------
 
-def get_needs_attention(db: Session) -> NeedsAttentionResponse:
+def get_needs_attention(
+    db: Session,
+    current_user: Optional[User] = None,
+) -> NeedsAttentionResponse:
     today = date.today()
     soon = today + timedelta(days=7)
 
     overdue_invoices = (
-        db.query(Invoice)
+        _scoped_invoice_query(db, current_user)
         .filter(Invoice.status == "overdue")
         .order_by(Invoice.due_date)
         .limit(50)
@@ -167,7 +213,7 @@ def get_needs_attention(db: Session) -> NeedsAttentionResponse:
     )
 
     soon_due = (
-        db.query(Invoice)
+        _scoped_invoice_query(db, current_user)
         .filter(
             Invoice.due_date > today,
             Invoice.due_date <= soon,
@@ -203,9 +249,14 @@ def get_needs_attention(db: Session) -> NeedsAttentionResponse:
 # Top clients
 # -------------------------------------------------------
 
-def get_top_clients(db: Session, limit: int = 10) -> TopClientsResponse:
+def get_top_clients(
+    db: Session,
+    limit: int = 10,
+    current_user: Optional[User] = None,
+) -> TopClientsResponse:
     rows = (
-        db.query(
+        _scoped_invoice_query(db, current_user)
+        .with_entities(
             Invoice.buyer_name,
             func.sum(Invoice.grand_total).label("total_invoiced"),
             func.count(Invoice.invoice_id).label("invoice_count"),
@@ -218,10 +269,11 @@ def get_top_clients(db: Session, limit: int = 10) -> TopClientsResponse:
 
     entries = []
     for buyer_name, total_invoiced, invoice_count in rows:
-        # Sum payments for this buyer's invoices
+        # Sum payments for this buyer's invoices within the caller's scope
         invoice_ids = [
             r.invoice_id
-            for r in db.query(Invoice.invoice_id)
+            for r in _scoped_invoice_query(db, current_user)
+            .with_entities(Invoice.invoice_id)
             .filter(Invoice.buyer_name == buyer_name)
             .all()
         ]

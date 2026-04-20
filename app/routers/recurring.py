@@ -15,7 +15,7 @@ from app.schemas.recurring import (
     VALID_FREQUENCIES,
 )
 from app.services.audit import log_audit
-from app.services.auth import get_optional_current_user
+from app.services.auth import get_optional_current_user, scope_query_to_owner, user_owns_record
 from app.services.scheduler import generate_recurring_invoices
 
 router = APIRouter(prefix="/recurring", tags=["Recurring Invoices"])
@@ -72,12 +72,9 @@ def list_recurring(
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    q = db.query(RecurringInvoice)
-    if current_user:
-        q = q.filter(
-            (RecurringInvoice.owner_id == current_user.user_id)
-            | (RecurringInvoice.owner_id == None)  # noqa: E711
-        )
+    q = scope_query_to_owner(
+        db.query(RecurringInvoice), RecurringInvoice.owner_id, current_user
+    )
     return q.order_by(RecurringInvoice.next_run_date).all()
 
 
@@ -85,9 +82,13 @@ def list_recurring(
 # GET /recurring/{recurring_id}
 # -------------------------------------------------------
 @router.get("/{recurring_id}", response_model=RecurringInvoiceResponse)
-def get_recurring(recurring_id: str, db: Session = Depends(get_db)):
+def get_recurring(
+    recurring_id: str,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
     rule = db.query(RecurringInvoice).filter(RecurringInvoice.recurring_id == recurring_id).first()
-    if not rule:
+    if not rule or not user_owns_record(current_user, rule.owner_id):
         raise HTTPException(status_code=404, detail="Recurring rule not found")
     return rule
 
@@ -103,7 +104,7 @@ def update_recurring(
     current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     rule = db.query(RecurringInvoice).filter(RecurringInvoice.recurring_id == recurring_id).first()
-    if not rule:
+    if not rule or not user_owns_record(current_user, rule.owner_id):
         raise HTTPException(status_code=404, detail="Recurring rule not found")
 
     update_data = payload.model_dump(exclude_unset=True)
@@ -136,7 +137,7 @@ def delete_recurring(
     current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     rule = db.query(RecurringInvoice).filter(RecurringInvoice.recurring_id == recurring_id).first()
-    if not rule:
+    if not rule or not user_owns_record(current_user, rule.owner_id):
         raise HTTPException(status_code=404, detail="Recurring rule not found")
     log_audit(db, "recurring", recurring_id, "delete",
               changed_by=current_user.user_id if current_user else None)

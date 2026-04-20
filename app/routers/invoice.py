@@ -17,7 +17,7 @@ from app.models.invoice_import import InvoiceImportToken
 from app.models.user import User
 from app.schemas.invoice import InvoiceCreate, InvoiceResponse, InvoiceUpdate
 from app.services.audit import log_audit
-from app.services.auth import get_optional_current_user
+from app.services.auth import get_optional_current_user, scope_query_to_owner, user_owns_record
 from app.services.transform import parse_csv, parse_generic_xml, parse_json, parse_pdf, parse_ubl_xml
 
 router = APIRouter(
@@ -228,17 +228,18 @@ def generate_pdf(invoice: Invoice, items: list) -> bytes:
     return buffer.getvalue()
 
 
-def _auto_mark_overdue(db: Session) -> int:
-    """Mark all past-due, non-terminal invoices as overdue. Returns count changed."""
+def _auto_mark_overdue(db: Session, current_user: Optional[User] = None) -> int:
+    """
+    Mark past-due, non-terminal invoices as overdue for the current user's
+    scope only. Returns count changed.
+    """
     today = date.today()
-    candidates = (
-        db.query(Invoice)
-        .filter(
-            Invoice.due_date < today,
-            Invoice.status.notin_(["paid", "cancelled", "overdue"]),
-        )
-        .all()
+    q = db.query(Invoice).filter(
+        Invoice.due_date < today,
+        Invoice.status.notin_(["paid", "cancelled", "overdue"]),
     )
+    q = scope_query_to_owner(q, Invoice.owner_id, current_user)
+    candidates = q.all()
     for inv in candidates:
         log_audit(db, "invoice", inv.invoice_id, "status_change",
                   changed_by="system",
@@ -344,13 +345,14 @@ def list_invoices(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    # Auto-mark overdue before returning
-    changed = _auto_mark_overdue(db)
+    # Auto-mark overdue within the caller's scope only
+    changed = _auto_mark_overdue(db, current_user)
     if changed:
         db.commit()
 
-    q = db.query(Invoice)
+    q = scope_query_to_owner(db.query(Invoice), Invoice.owner_id, current_user)
 
     if status:
         statuses = [s.strip() for s in status.split(",") if s.strip()]
@@ -406,7 +408,7 @@ def update_invoice_status(
             detail=f"Invalid status '{status}'. Must be one of: {', '.join(sorted(VALID_STATUSES))}",
         )
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
-    if not invoice:
+    if not invoice or not user_owns_record(current_user, invoice.owner_id):
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     old_status = invoice.status
@@ -423,8 +425,11 @@ def update_invoice_status(
 # POST /invoice/check-overdue – manually trigger overdue detection
 # -------------------------------------------------------
 @router.post("/check-overdue", status_code=200)
-def check_overdue(db: Session = Depends(get_db)):
-    count = _auto_mark_overdue(db)
+def check_overdue(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    count = _auto_mark_overdue(db, current_user)
     db.commit()
     return {"marked_overdue": count}
 
@@ -518,10 +523,11 @@ def get_invoice(
         default="json",
         description="Output format: json, ubl, xml, csv, pdf"
     ),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
-    if not invoice:
+    if not invoice or not user_owns_record(current_user, invoice.owner_id):
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     items = db.query(LineItem).filter(LineItem.invoice_id == invoice_id).all()
@@ -564,7 +570,7 @@ def update_invoice(
     current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
-    if not invoice:
+    if not invoice or not user_owns_record(current_user, invoice.owner_id):
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     update_data = updates.model_dump(exclude_unset=True)
@@ -639,7 +645,7 @@ def delete_invoice(
     current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
-    if not invoice:
+    if not invoice or not user_owns_record(current_user, invoice.owner_id):
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     log_audit(db, "invoice", invoice_id, "delete",
@@ -702,13 +708,20 @@ async def parse_invoice_file(file: UploadFile = File(...)):
 
 # Legacy Sprint 1 routes kept accessible in parallel
 @legacy_router.post("/", response_model=InvoiceResponse, status_code=201)
-def legacy_create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
-    return create_invoice(invoice_data, db)
+def legacy_create_invoice(
+    invoice_data: InvoiceCreate,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    return create_invoice(invoice_data, db, current_user)
 
 
 @legacy_router.get("/", response_model=list[InvoiceResponse])
-def legacy_list_invoices(db: Session = Depends(get_db)):
-    return list_invoices(db)
+def legacy_list_invoices(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    return list_invoices(db=db, current_user=current_user)
 
 
 @legacy_router.get("/{invoice_id}")
@@ -718,16 +731,26 @@ def legacy_get_invoice(
         default="json",
         description="Output format: json, ubl, xml, csv, pdf"
     ),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    return get_invoice(invoice_id, format, db)
+    return get_invoice(invoice_id, format, db, current_user)
 
 
 @legacy_router.put("/{invoice_id}", response_model=InvoiceResponse)
-def legacy_update_invoice(invoice_id: str, updates: InvoiceUpdate, db: Session = Depends(get_db)):
-    return update_invoice(invoice_id, updates, db)
+def legacy_update_invoice(
+    invoice_id: str,
+    updates: InvoiceUpdate,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    return update_invoice(invoice_id, updates, db, current_user)
 
 
 @legacy_router.delete("/{invoice_id}", status_code=200)
-def legacy_delete_invoice(invoice_id: str, db: Session = Depends(get_db)):
-    return delete_invoice(invoice_id, db)
+def legacy_delete_invoice(
+    invoice_id: str,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    return delete_invoice(invoice_id, db, current_user)

@@ -83,6 +83,32 @@ def get_optional_current_user(
     return db.query(User).filter(User.user_id == payload.get("sub")).first()
 
 
+def scope_query_to_owner(query, owner_column, current_user: Optional[User]):
+    """
+    Restrict a SQLAlchemy query so each user only sees rows they own.
+
+    - Authenticated users see rows where owner_column == their user_id.
+    - Unauthenticated requests see rows where owner_column IS NULL
+      (preserves anonymous usage for legacy/test clients).
+
+    Always call this on any query that returns user-owned data so no user
+    can read another user's records.
+    """
+    if current_user is not None:
+        return query.filter(owner_column == current_user.user_id)
+    return query.filter(owner_column.is_(None))
+
+
+def user_owns_record(current_user: Optional[User], owner_id: Optional[str]) -> bool:
+    """
+    Return True if *current_user* is allowed to act on a record whose
+    owner_id is *owner_id*, using the same rule as `scope_query_to_owner`.
+    """
+    if current_user is not None:
+        return owner_id == current_user.user_id
+    return owner_id is None
+
+
 def require_roles(*roles: str):
     """Dependency factory: require the current user to have one of the given roles."""
     def _check(current_user: User = Depends(get_current_user)) -> User:
