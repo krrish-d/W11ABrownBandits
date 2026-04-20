@@ -36,6 +36,8 @@ def create_template(
 
     template = InvoiceTemplate(owner_id=owner_id, **payload.model_dump())
     db.add(template)
+    # Flush so SQLAlchemy assigns template_id before we reference it in the audit log
+    db.flush()
     log_audit(db, "template", template.template_id, "create",
               changed_by=owner_id)
     db.commit()

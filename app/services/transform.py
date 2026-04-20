@@ -23,23 +23,23 @@ def parse_ubl_xml(xml_string: str) -> dict:
 
     currency = get("DocumentCurrencyCode") or "AUD"
 
-    supplier_name = None
-    supplier_el = root.find(f"{{{cac}}}AccountingSupplierParty/{{{cac}}}Party/{{{cac}}}PartyName/{{{cbc}}}Name")
-    if supplier_el is not None:
-        supplier_name = supplier_el.text
-    supplier_address_el = root.find(
-        f"{{{cac}}}AccountingSupplierParty/{{{cac}}}Party/{{{cac}}}PostalAddress/{{{cbc}}}StreetName"
-    )
-    supplier_address = supplier_address_el.text if supplier_address_el is not None else None
+    def _party_fields(party_path: str):
+        name_el = root.find(f"{{{cac}}}{party_path}/{{{cac}}}Party/{{{cac}}}PartyName/{{{cbc}}}Name")
+        address_el = root.find(
+            f"{{{cac}}}{party_path}/{{{cac}}}Party/{{{cac}}}PostalAddress/{{{cbc}}}StreetName"
+        )
+        # UBL stores email under Party/Contact/ElectronicMail (or PartyTaxScheme fallback)
+        email_el = root.find(
+            f"{{{cac}}}{party_path}/{{{cac}}}Party/{{{cac}}}Contact/{{{cbc}}}ElectronicMail"
+        )
+        return (
+            name_el.text if name_el is not None else None,
+            address_el.text if address_el is not None else None,
+            email_el.text if email_el is not None else None,
+        )
 
-    customer_name = None
-    customer_el = root.find(f"{{{cac}}}AccountingCustomerParty/{{{cac}}}Party/{{{cac}}}PartyName/{{{cbc}}}Name")
-    if customer_el is not None:
-        customer_name = customer_el.text
-    customer_address_el = root.find(
-        f"{{{cac}}}AccountingCustomerParty/{{{cac}}}Party/{{{cac}}}PostalAddress/{{{cbc}}}StreetName"
-    )
-    customer_address = customer_address_el.text if customer_address_el is not None else None
+    supplier_name, supplier_address, supplier_email = _party_fields("AccountingSupplierParty")
+    customer_name, customer_address, customer_email = _party_fields("AccountingCustomerParty")
 
     monetary = root.find(f"{{{cac}}}LegalMonetaryTotal")
     subtotal = None
@@ -68,11 +68,14 @@ def parse_ubl_xml(xml_string: str) -> dict:
     return {
         "invoice_number": get("ID"),
         "issue_date": get("IssueDate"),
+        "due_date": get("DueDate"),
         "currency": currency,
         "seller_name": supplier_name,
         "seller_address": supplier_address,
+        "seller_email": supplier_email,
         "buyer_name": customer_name,
         "buyer_address": customer_address,
+        "buyer_email": customer_email,
         "subtotal": subtotal,
         "grand_total": grand_total,
         "items": items
@@ -101,17 +104,21 @@ def parse_generic_xml(xml_string: str) -> dict:
                 "description": item_el.findtext("Description"),
                 "quantity": item_el.findtext("Quantity"),
                 "unit_price": item_el.findtext("UnitPrice"),
+                "tax_rate": item_el.findtext("TaxRate"),
                 "line_total": item_el.findtext("LineTotal"),
             })
 
     return {
         "invoice_number": get("InvoiceNumber"),
         "issue_date": get("IssueDate") or get("DueDate"),
+        "due_date": get("DueDate"),
         "currency": get("Currency") or "AUD",
         "buyer_name": get("BuyerName") or get("ClientName"),
         "buyer_address": get("BuyerAddress"),
+        "buyer_email": get("BuyerEmail") or get("ClientEmail"),
         "seller_name": get("SellerName") or get("SupplierName"),
         "seller_address": get("SellerAddress"),
+        "seller_email": get("SellerEmail") or get("SupplierEmail"),
         "subtotal": get("Subtotal"),
         "grand_total": get("GrandTotal"),
         "items": items
@@ -138,43 +145,144 @@ def parse_json(json_string: str) -> dict:
 # -------------------------------------------------------
 # HELPER: Parse CSV string into a plain dict
 # -------------------------------------------------------
+# Column names that identify each section of our multi-section CSV format.
+_INVOICE_HEADER_KEYS = {"invoice_number", "seller_name", "buyer_name", "currency"}
+_ITEM_HEADER_KEYS = {"description", "quantity", "unit_price"}
+
+
 def parse_csv(csv_string: str) -> dict:
-    reader = csv.DictReader(io.StringIO(csv_string))
-    rows = list(reader)
-    if not rows:
+    """
+    Parse a CSV that may be in either of the following formats:
+
+    1. Flat layout (all columns on every row, item data duplicated per row)
+    2. Multi-section layout produced by our own exporters:
+
+           invoice_number, currency, ... , grand_total
+           INV-001,        AUD,     ... , 110.00
+           <blank row>
+           item_number, description, quantity, unit_price, ...
+           1,           Widget,      2,        50,         ...
+           2,           Gadget,      1,        10,         ...
+    """
+    raw_rows = list(csv.reader(io.StringIO(csv_string)))
+    if not raw_rows:
         raise ValueError("CSV is empty or missing headers")
 
-    row = rows[0]
+    # Drop fully blank rows that might appear at the very top of the file.
+    non_empty_rows = [r for r in raw_rows if any(cell.strip() for cell in r)]
+    if not non_empty_rows:
+        raise ValueError("CSV is empty or missing headers")
 
-    # Accept issue_date OR due_date as the date field
-    issue = (row.get("issue_date") or row.get("due_date") or "").strip()
+    invoice_headers = [h.strip() for h in non_empty_rows[0]]
+    invoice_keys = {h.lower() for h in invoice_headers}
+    if not invoice_keys.intersection(_INVOICE_HEADER_KEYS):
+        raise ValueError(
+            "CSV header must include invoice fields such as invoice_number, seller_name, buyer_name."
+        )
+
+    # Walk rows after the header, capturing the invoice row and splitting at the item header.
+    invoice_row: list[str] | None = None
+    item_headers: list[str] | None = None
+    item_rows: list[list[str]] = []
+
+    for row in raw_rows[1:]:
+        if not any(cell.strip() for cell in row):
+            # Blank row signals the boundary between sections.
+            continue
+
+        lower_cells = {cell.strip().lower() for cell in row if cell.strip()}
+
+        if item_headers is None and lower_cells.intersection(_ITEM_HEADER_KEYS) and "description" in lower_cells:
+            # This row is the line-item header — subsequent rows are items.
+            item_headers = [h.strip() for h in row]
+            continue
+
+        if item_headers is None:
+            # First non-header, non-blank row is the invoice data.
+            if invoice_row is None:
+                invoice_row = row
+            # Ignore any further rows before the item section.
+            continue
+
+        item_rows.append(row)
+
+    if invoice_row is None:
+        raise ValueError("CSV is missing an invoice data row")
+
+    def _col(row: list[str], headers: list[str], *names: str) -> str:
+        for name in names:
+            if name in headers:
+                idx = headers.index(name)
+                if idx < len(row):
+                    return (row[idx] or "").strip()
+        return ""
+
+    def _col_ci(row: list[str], headers: list[str], *names: str) -> str:
+        lowered = [h.lower() for h in headers]
+        for name in names:
+            name_l = name.lower()
+            if name_l in lowered:
+                idx = lowered.index(name_l)
+                if idx < len(row):
+                    return (row[idx] or "").strip()
+        return ""
+
+    issue = _col_ci(invoice_row, invoice_headers, "issue_date") or _col_ci(
+        invoice_row, invoice_headers, "due_date"
+    )
+    due = _col_ci(invoice_row, invoice_headers, "due_date") or issue
+
+    required = ["buyer_name", "seller_name", "buyer_address", "seller_address", "currency"]
+    for field in required:
+        if not _col_ci(invoice_row, invoice_headers, field):
+            raise ValueError(f"Missing required CSV field: {field}")
+
     if not issue:
         raise ValueError("CSV must include 'issue_date' or 'due_date' column with a value")
 
-    for field in ["buyer_name", "seller_name", "buyer_address", "seller_address", "currency"]:
-        if field not in row or not str(row[field]).strip():
-            raise ValueError(f"Missing required CSV field: {field}")
-
-    items = []
-    for r in rows:
-        if r.get("description"):
+    items: list[dict] = []
+    if item_headers:
+        for r in item_rows:
+            desc = _col_ci(r, item_headers, "description")
+            # Stop if we hit trailing rows that look like totals.
+            if not desc:
+                continue
             items.append({
-                "item_number": r.get("item_number"),
-                "description": r.get("description"),
-                "quantity": r.get("quantity"),
-                "unit_price": r.get("unit_price"),
-                "line_total": r.get("line_total"),
+                "item_number": _col_ci(r, item_headers, "item_number"),
+                "description": desc,
+                "quantity": _col_ci(r, item_headers, "quantity"),
+                "unit_price": _col_ci(r, item_headers, "unit_price"),
+                "tax_rate": _col_ci(r, item_headers, "tax_rate"),
+                "line_total": _col_ci(r, item_headers, "line_total"),
+            })
+    else:
+        # Flat CSV — the same row repeats invoice + item information.
+        desc = _col_ci(invoice_row, invoice_headers, "description")
+        if desc:
+            items.append({
+                "item_number": _col_ci(invoice_row, invoice_headers, "item_number"),
+                "description": desc,
+                "quantity": _col_ci(invoice_row, invoice_headers, "quantity"),
+                "unit_price": _col_ci(invoice_row, invoice_headers, "unit_price"),
+                "tax_rate": _col_ci(invoice_row, invoice_headers, "tax_rate"),
+                "line_total": _col_ci(invoice_row, invoice_headers, "line_total"),
             })
 
     return {
-        "invoice_number": row.get("invoice_number"),
-        "currency": row["currency"].strip() if row["currency"] else "",
-        "seller_name": row["seller_name"].strip() if row["seller_name"] else "",
-        "seller_address": row["seller_address"].strip() if row["seller_address"] else "",
-        "buyer_name": row["buyer_name"].strip() if row["buyer_name"] else "",
-        "buyer_address": row["buyer_address"].strip() if row["buyer_address"] else "",
+        "invoice_number": _col_ci(invoice_row, invoice_headers, "invoice_number") or None,
+        "currency": _col_ci(invoice_row, invoice_headers, "currency"),
+        "seller_name": _col_ci(invoice_row, invoice_headers, "seller_name"),
+        "seller_address": _col_ci(invoice_row, invoice_headers, "seller_address"),
+        "seller_email": _col_ci(invoice_row, invoice_headers, "seller_email") or None,
+        "buyer_name": _col_ci(invoice_row, invoice_headers, "buyer_name"),
+        "buyer_address": _col_ci(invoice_row, invoice_headers, "buyer_address"),
+        "buyer_email": _col_ci(invoice_row, invoice_headers, "buyer_email") or None,
         "issue_date": issue,
-        "items": items
+        "due_date": due or None,
+        "subtotal": _col_ci(invoice_row, invoice_headers, "subtotal") or None,
+        "tax_total": _col_ci(invoice_row, invoice_headers, "tax_total") or None,
+        "grand_total": _col_ci(invoice_row, invoice_headers, "grand_total") or None,
+        "items": items,
     }
 
 
@@ -189,22 +297,35 @@ def parse_pdf(pdf_bytes: bytes) -> dict:
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        tables: list[list[list[str]]] = []
+        for page in pdf.pages:
+            for table in page.extract_tables() or []:
+                tables.append(table)
 
     if not text.strip():
         raise ValueError("Could not extract text from PDF")
 
     def extract_field(label):
-        pattern = rf"{re.escape(label)}\s*([^\n]+)"
+        # Only match whitespace on the same line so a blank field doesn't
+        # swallow the next line's content.
+        pattern = rf"{re.escape(label)}[^\S\r\n]*([^\r\n]*)"
         match = re.search(pattern, text)
-        return match.group(1).strip() if match else None
+        if not match:
+            return None
+        value = match.group(1).strip()
+        return value or None
 
     invoice_number = extract_field("Invoice Number:")
     seller_name = extract_field("Seller Name:") or extract_field("Supplier:")
     seller_address = extract_field("Seller Address:")
+    seller_email = extract_field("Seller Email:") or extract_field("Supplier Email:")
     buyer_name = extract_field("Buyer Name:") or extract_field("Client Name:")
     buyer_address = extract_field("Buyer Address:")
+    buyer_email = extract_field("Buyer Email:") or extract_field("Client Email:")
     currency_raw = extract_field("Currency:")
-    issue_date = extract_field("Due Date:")
+    # Prefer explicit Issue Date; fall back to Due Date if the PDF only lists one date.
+    issue_date = extract_field("Issue Date:") or extract_field("Due Date:")
+    due_date = extract_field("Due Date:") or issue_date
     currency = currency_raw.split()[0] if currency_raw else "AUD"
 
     subtotal_raw = extract_field("Subtotal:")
@@ -219,41 +340,127 @@ def parse_pdf(pdf_bytes: bytes) -> dict:
     subtotal = clean_amount(subtotal_raw)
     grand_total = clean_amount(grand_total_raw)
 
-    items = []
-    lines = text.split("\n")
-    in_items = False
-    for line in lines:
-        if "Description" in line and "Quantity" in line:
-            in_items = True
+    items: list[dict] = []
+
+    def _clean_cell(value) -> str:
+        if value is None:
+            return ""
+        return " ".join(str(value).split())
+
+    def _strip_currency(value: str) -> str:
+        # Remove currency prefixes like "AUD 50.00" / "$50.00" / trailing "%".
+        stripped = value.strip().rstrip("%").strip()
+        parts = stripped.split()
+        return parts[-1] if parts else stripped
+
+    # Prefer the structured tables pdfplumber produces — they handle multi-word
+    # descriptions correctly regardless of spacing.
+    for table in tables:
+        if not table or len(table) < 2:
             continue
-        if in_items:
-            if "Subtotal:" in line or "Tax Total:" in line or "Grand Total:" in line:
-                break
-            parts = line.strip().split()
-            if len(parts) >= 4:
-                try:
+        headers = [_clean_cell(c).lower() for c in table[0]]
+        if not ("description" in headers and "quantity" in headers):
+            continue
+
+        def idx(*names: str) -> int:
+            for name in names:
+                if name in headers:
+                    return headers.index(name)
+            return -1
+
+        desc_idx = idx("description")
+        qty_idx = idx("quantity")
+        price_idx = idx("unit price", "price")
+        tax_idx = idx("tax rate", "tax %")
+        total_idx = idx("line total", "total")
+        num_idx = idx("item #", "item number", "no", "#")
+
+        for row in table[1:]:
+            if row is None or all(cell is None or not str(cell).strip() for cell in row):
+                continue
+            desc = _clean_cell(row[desc_idx]) if 0 <= desc_idx < len(row) else ""
+            if not desc:
+                continue
+            items.append({
+                "item_number": _clean_cell(row[num_idx]) if 0 <= num_idx < len(row) else str(len(items) + 1),
+                "description": desc,
+                "quantity": _clean_cell(row[qty_idx]) if 0 <= qty_idx < len(row) else "",
+                "unit_price": _strip_currency(_clean_cell(row[price_idx])) if 0 <= price_idx < len(row) else "",
+                "tax_rate": _strip_currency(_clean_cell(row[tax_idx])) if 0 <= tax_idx < len(row) else "",
+                "line_total": _strip_currency(_clean_cell(row[total_idx])) if 0 <= total_idx < len(row) else "",
+            })
+        if items:
+            break
+
+    # Fallback: parse the flat text if pdfplumber could not detect a table.
+    if not items:
+        lines = text.split("\n")
+        in_items = False
+        header_cols: list[str] = []
+        for line in lines:
+            lower = line.lower()
+            if "description" in lower and "quantity" in lower:
+                in_items = True
+                header_cols = [c.strip().lower() for c in line.split() if c.strip()]
+                continue
+            if in_items:
+                if "subtotal:" in lower or "tax total:" in lower or "grand total:" in lower:
+                    break
+                parts = line.strip().split()
+                if len(parts) < 4:
+                    continue
+                # The last 3-4 tokens are numeric (unit price, optional tax %, line total).
+                # Detect the number of trailing numeric columns dynamically.
+                trailing_numeric = 0
+                for token in reversed(parts):
+                    if re.fullmatch(r"-?\d+(?:\.\d+)?%?", token):
+                        trailing_numeric += 1
+                    else:
+                        break
+                if trailing_numeric < 2:
+                    continue
+
+                # Common layouts after `Item# Description ... numbers`:
+                #   item_number, description..., quantity, unit_price, line_total (3 trailing)
+                #   item_number, description..., quantity, unit_price, tax_rate, line_total (4 trailing)
+                if trailing_numeric >= 4:
+                    line_total = parts[-1].rstrip("%")
+                    tax_rate = parts[-2].rstrip("%")
+                    unit_price = parts[-3]
+                    quantity = parts[-4]
+                    description_tokens = parts[1:-4] if len(parts) > 5 else parts[:-4]
+                    item_number = parts[0] if len(parts) > 5 else str(len(items) + 1)
+                else:
                     line_total = parts[-1]
                     unit_price = parts[-2]
-                    quantity = parts[-4]
-                    description = " ".join(parts[:-4])
-                    items.append({
-                        "item_number": str(len(items) + 1),
-                        "description": description,
-                        "quantity": quantity,
-                        "unit_price": unit_price,
-                        "line_total": line_total,
-                    })
-                except (IndexError, ValueError):
+                    quantity = parts[-3]
+                    tax_rate = ""
+                    description_tokens = parts[1:-3] if len(parts) > 4 else parts[:-3]
+                    item_number = parts[0] if len(parts) > 4 else str(len(items) + 1)
+
+                description = " ".join(description_tokens).strip()
+                if not description:
                     continue
+                items.append({
+                    "item_number": item_number,
+                    "description": description,
+                    "quantity": quantity,
+                    "unit_price": unit_price,
+                    "tax_rate": tax_rate,
+                    "line_total": line_total,
+                })
 
     return {
         "invoice_number": invoice_number,
         "issue_date": issue_date,
+        "due_date": due_date,
         "currency": currency,
         "seller_name": seller_name or "Supplier",
         "seller_address": seller_address,
+        "seller_email": seller_email,
         "buyer_name": buyer_name,
         "buyer_address": buyer_address,
+        "buyer_email": buyer_email,
         "subtotal": subtotal,
         "grand_total": grand_total,
         "items": items
@@ -306,6 +513,8 @@ def dict_to_ubl_xml(data: dict) -> str:
     etree.SubElement(root, f"{{{cbc}}}UBLVersionID").text = "2.1"
     etree.SubElement(root, f"{{{cbc}}}ID").text = data.get("invoice_number", "UNKNOWN")
     etree.SubElement(root, f"{{{cbc}}}IssueDate").text = data.get("issue_date", "")
+    if data.get("due_date"):
+        etree.SubElement(root, f"{{{cbc}}}DueDate").text = str(data.get("due_date", ""))
     etree.SubElement(root, f"{{{cbc}}}InvoiceTypeCode").text = "380"
     etree.SubElement(root, f"{{{cbc}}}DocumentCurrencyCode").text = data.get("currency", "AUD")
 
@@ -315,6 +524,9 @@ def dict_to_ubl_xml(data: dict) -> str:
     etree.SubElement(supplier_name_el, f"{{{cbc}}}Name").text = data.get("seller_name", "Unknown Supplier")
     supplier_address = etree.SubElement(supplier_party, f"{{{cac}}}PostalAddress")
     etree.SubElement(supplier_address, f"{{{cbc}}}StreetName").text = data.get("seller_address", "")
+    if data.get("seller_email"):
+        supplier_contact = etree.SubElement(supplier_party, f"{{{cac}}}Contact")
+        etree.SubElement(supplier_contact, f"{{{cbc}}}ElectronicMail").text = data.get("seller_email", "")
 
     customer = etree.SubElement(root, f"{{{cac}}}AccountingCustomerParty")
     customer_party = etree.SubElement(customer, f"{{{cac}}}Party")
@@ -322,6 +534,9 @@ def dict_to_ubl_xml(data: dict) -> str:
     etree.SubElement(customer_name_el, f"{{{cbc}}}Name").text = data.get("buyer_name", "Unknown Customer")
     customer_address = etree.SubElement(customer_party, f"{{{cac}}}PostalAddress")
     etree.SubElement(customer_address, f"{{{cbc}}}StreetName").text = data.get("buyer_address", "")
+    if data.get("buyer_email"):
+        customer_contact = etree.SubElement(customer_party, f"{{{cac}}}Contact")
+        etree.SubElement(customer_contact, f"{{{cbc}}}ElectronicMail").text = data.get("buyer_email", "")
 
     currency = data.get("currency", "AUD")
     monetary_total = etree.SubElement(root, f"{{{cac}}}LegalMonetaryTotal")
@@ -350,11 +565,15 @@ def dict_to_generic_xml(data: dict) -> str:
 
     etree.SubElement(root, "InvoiceNumber").text = data.get("invoice_number", "")
     etree.SubElement(root, "IssueDate").text = data.get("issue_date", "")
+    if data.get("due_date"):
+        etree.SubElement(root, "DueDate").text = str(data.get("due_date", ""))
     etree.SubElement(root, "Currency").text = data.get("currency", "AUD")
     etree.SubElement(root, "SellerName").text = data.get("seller_name", "")
     etree.SubElement(root, "SellerAddress").text = data.get("seller_address", "")
+    etree.SubElement(root, "SellerEmail").text = data.get("seller_email", "") or ""
     etree.SubElement(root, "BuyerName").text = data.get("buyer_name", "")
     etree.SubElement(root, "BuyerAddress").text = data.get("buyer_address", "")
+    etree.SubElement(root, "BuyerEmail").text = data.get("buyer_email", "") or ""
     etree.SubElement(root, "Subtotal").text = str(data.get("subtotal", 0))
     etree.SubElement(root, "GrandTotal").text = str(data.get("grand_total", 0))
 
@@ -386,8 +605,9 @@ def dict_to_csv(data: dict) -> str:
 
     writer.writerow(
         [
-            "invoice_number", "currency", "seller_name", "seller_address",
-            "buyer_name", "buyer_address", "issue_date", "subtotal", "grand_total"
+            "invoice_number", "currency", "seller_name", "seller_address", "seller_email",
+            "buyer_name", "buyer_address", "buyer_email",
+            "issue_date", "due_date", "subtotal", "grand_total"
         ]
     )
     writer.writerow([
@@ -395,21 +615,25 @@ def dict_to_csv(data: dict) -> str:
         data.get("currency", ""),
         data.get("seller_name", ""),
         data.get("seller_address", ""),
+        data.get("seller_email", "") or "",
         data.get("buyer_name", ""),
         data.get("buyer_address", ""),
+        data.get("buyer_email", "") or "",
         data.get("issue_date", ""),
+        data.get("due_date", "") or "",
         data.get("subtotal", ""),
         data.get("grand_total", ""),
     ])
 
     writer.writerow([])
-    writer.writerow(["item_number", "description", "quantity", "unit_price", "line_total"])
+    writer.writerow(["item_number", "description", "quantity", "unit_price", "tax_rate", "line_total"])
     for item in data.get("items", []):
         writer.writerow([
             item.get("item_number", ""),
             item.get("description", ""),
             item.get("quantity", ""),
             item.get("unit_price", ""),
+            item.get("tax_rate", "") or "",
             item.get("line_total", ""),
         ])
 
@@ -441,10 +665,13 @@ def dict_to_pdf(data: dict) -> bytes:
         ["Invoice Number:", data.get("invoice_number", "")],
         ["Seller Name:", data.get("seller_name", "")],
         ["Seller Address:", data.get("seller_address", "")],
+        ["Seller Email:", data.get("seller_email", "") or ""],
         ["Buyer Name:", data.get("buyer_name", "")],
         ["Buyer Address:", data.get("buyer_address", "")],
+        ["Buyer Email:", data.get("buyer_email", "") or ""],
         ["Currency:", data.get("currency", "")],
         ["Issue Date:", data.get("issue_date", "")],
+        ["Due Date:", str(data.get("due_date", "") or "")],
     ]
     detail_table = Table(details, colWidths=[50 * mm, 120 * mm])
     detail_table.setStyle(TableStyle([

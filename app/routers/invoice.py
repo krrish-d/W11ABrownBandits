@@ -170,6 +170,7 @@ def generate_pdf(invoice: Invoice, items: list) -> bytes:
         ["Buyer Address:", invoice.buyer_address],
         ["Buyer Email:", invoice.buyer_email],
         ["Currency:", invoice.currency],
+        ["Issue Date:", str(getattr(invoice, "issue_date", None) or invoice.due_date)],
         ["Due Date:", str(invoice.due_date)],
         ["Status:", invoice.status],
     ]
@@ -669,9 +670,11 @@ async def parse_invoice_file(file: UploadFile = File(...)):
             data = parse_csv(content.decode(errors="replace"))
         elif ext in ("xml",):
             text = content.decode(errors="replace")
-            try:
+            # Detect UBL by namespace — parse_ubl_xml silently returns nulls
+            # for non-UBL XML, so we can't rely on a try/except fallback.
+            if "urn:oasis:names:specification:ubl" in text[:2000]:
                 data = parse_ubl_xml(text)
-            except ValueError:
+            else:
                 data = parse_generic_xml(text)
         elif ext == "pdf":
             data = parse_pdf(content)
@@ -681,9 +684,9 @@ async def parse_invoice_file(file: UploadFile = File(...)):
             if text.startswith("{"):
                 data = parse_json(text)
             elif text.startswith("<?xml") or "<Invoice" in text[:300]:
-                try:
+                if "urn:oasis:names:specification:ubl" in text[:2000]:
                     data = parse_ubl_xml(text)
-                except ValueError:
+                else:
                     data = parse_generic_xml(text)
             elif "seller_name" in text or "buyer_name" in text or "invoice_number" in text:
                 data = parse_csv(text)

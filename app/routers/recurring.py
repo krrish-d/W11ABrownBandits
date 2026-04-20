@@ -55,6 +55,8 @@ def create_recurring(
         invoice_template=json.dumps(payload.invoice_template),
     )
     db.add(rule)
+    # Flush so SQLAlchemy assigns recurring_id before we reference it in the audit log
+    db.flush()
     log_audit(db, "recurring", rule.recurring_id, "create",
               changed_by=current_user.user_id if current_user else None)
     db.commit()

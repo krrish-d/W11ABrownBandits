@@ -27,6 +27,8 @@ def create_client(
         **payload.model_dump(),
     )
     db.add(client)
+    # Flush so SQLAlchemy assigns client_id before we reference it in the audit log
+    db.flush()
     log_audit(db, "client", client.client_id, "create",
               changed_by=current_user.user_id if current_user else None)
     db.commit()
