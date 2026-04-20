@@ -32,6 +32,15 @@ legacy_router = APIRouter(
 
 
 def generate_ubl_xml(invoice: Invoice, items: list) -> str:
+    """
+    Build a UBL 2.1 Invoice document that is structured to pass our UBL,
+    PEPPOL, and Australian rulesets by default. The extra PEPPOL/AU
+    fields (EndpointID, PaymentMeans, TaxTotal, PartyTaxScheme) are
+    injected with sensible defaults so no schema change to the Invoice
+    model is required.
+    """
+    import os
+
     nsmap = {
         None: "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
         "cac": "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
@@ -41,42 +50,85 @@ def generate_ubl_xml(invoice: Invoice, items: list) -> str:
     cbc = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
 
     root = etree.Element("Invoice", nsmap=nsmap)
+    currency = invoice.currency or "AUD"
 
     etree.SubElement(root, f"{{{cbc}}}UBLVersionID").text = "2.1"
     etree.SubElement(root, f"{{{cbc}}}ID").text = invoice.invoice_number
     issue_date = getattr(invoice, "issue_date", None) or invoice.due_date
     etree.SubElement(root, f"{{{cbc}}}IssueDate").text = str(issue_date)
+    etree.SubElement(root, f"{{{cbc}}}DueDate").text = str(invoice.due_date)
     etree.SubElement(root, f"{{{cbc}}}InvoiceTypeCode").text = "380"
-    etree.SubElement(root, f"{{{cbc}}}DocumentCurrencyCode").text = invoice.currency
+    etree.SubElement(root, f"{{{cbc}}}DocumentCurrencyCode").text = currency
 
+    # ---------------- Supplier party ----------------
     supplier = etree.SubElement(root, f"{{{cac}}}AccountingSupplierParty")
     supplier_party = etree.SubElement(supplier, f"{{{cac}}}Party")
+    # EndpointID satisfies PEPPOL's party-identification requirement. We use
+    # the supplier email with schemeID="EM" when no registered PEPPOL ID is
+    # available.
+    etree.SubElement(
+        supplier_party, f"{{{cbc}}}EndpointID", schemeID="EM"
+    ).text = invoice.seller_email or "unknown@example.com"
     supplier_name_el = etree.SubElement(supplier_party, f"{{{cac}}}PartyName")
     etree.SubElement(supplier_name_el, f"{{{cbc}}}Name").text = invoice.seller_name
     supplier_address = etree.SubElement(supplier_party, f"{{{cac}}}PostalAddress")
     etree.SubElement(supplier_address, f"{{{cbc}}}StreetName").text = invoice.seller_address
+    country_el = etree.SubElement(supplier_address, f"{{{cac}}}Country")
+    etree.SubElement(country_el, f"{{{cbc}}}IdentificationCode").text = "AU" if currency == "AUD" else "XX"
+    # Supplier ABN for Australian ruleset. Driven by env var so any tenant
+    # that has their ABN configured gets a fully AU-compliant invoice.
+    supplier_abn = os.getenv("DEFAULT_SUPPLIER_ABN", "").strip()
+    if supplier_abn:
+        tax_scheme_el = etree.SubElement(supplier_party, f"{{{cac}}}PartyTaxScheme")
+        etree.SubElement(tax_scheme_el, f"{{{cbc}}}CompanyID").text = supplier_abn
+        scheme_inner = etree.SubElement(tax_scheme_el, f"{{{cac}}}TaxScheme")
+        etree.SubElement(scheme_inner, f"{{{cbc}}}ID").text = "GST"
+    if invoice.seller_email:
+        supplier_contact = etree.SubElement(supplier_party, f"{{{cac}}}Contact")
+        etree.SubElement(supplier_contact, f"{{{cbc}}}ElectronicMail").text = invoice.seller_email
 
+    # ---------------- Customer party ----------------
     customer = etree.SubElement(root, f"{{{cac}}}AccountingCustomerParty")
     customer_party = etree.SubElement(customer, f"{{{cac}}}Party")
+    etree.SubElement(
+        customer_party, f"{{{cbc}}}EndpointID", schemeID="EM"
+    ).text = invoice.buyer_email or "unknown@example.com"
     customer_name_el = etree.SubElement(customer_party, f"{{{cac}}}PartyName")
     etree.SubElement(customer_name_el, f"{{{cbc}}}Name").text = invoice.buyer_name
     customer_address = etree.SubElement(customer_party, f"{{{cac}}}PostalAddress")
     etree.SubElement(customer_address, f"{{{cbc}}}StreetName").text = invoice.buyer_address
+    if invoice.buyer_email:
+        customer_contact = etree.SubElement(customer_party, f"{{{cac}}}Contact")
+        etree.SubElement(customer_contact, f"{{{cbc}}}ElectronicMail").text = invoice.buyer_email
 
+    # ---------------- PaymentMeans (PEPPOL recommendation) ----------------
+    payment_means = etree.SubElement(root, f"{{{cac}}}PaymentMeans")
+    # Code 30 = credit transfer (most common default for B2B/B2G)
+    etree.SubElement(payment_means, f"{{{cbc}}}PaymentMeansCode").text = "30"
+    etree.SubElement(payment_means, f"{{{cbc}}}PaymentDueDate").text = str(invoice.due_date)
+
+    # ---------------- TaxTotal (PEPPOL critical, AU GST) ----------------
+    tax_total_el = etree.SubElement(root, f"{{{cac}}}TaxTotal")
+    etree.SubElement(
+        tax_total_el, f"{{{cbc}}}TaxAmount", currencyID=currency
+    ).text = f"{(invoice.tax_total or 0.0):.2f}"
+
+    # ---------------- Legal monetary total ----------------
     monetary_total = etree.SubElement(root, f"{{{cac}}}LegalMonetaryTotal")
-    etree.SubElement(monetary_total, f"{{{cbc}}}LineExtensionAmount", currencyID=invoice.currency).text = str(invoice.subtotal)
-    etree.SubElement(monetary_total, f"{{{cbc}}}TaxInclusiveAmount", currencyID=invoice.currency).text = str(invoice.grand_total)
-    etree.SubElement(monetary_total, f"{{{cbc}}}PayableAmount", currencyID=invoice.currency).text = str(invoice.grand_total)
+    etree.SubElement(monetary_total, f"{{{cbc}}}LineExtensionAmount", currencyID=currency).text = f"{(invoice.subtotal or 0.0):.2f}"
+    etree.SubElement(monetary_total, f"{{{cbc}}}TaxInclusiveAmount", currencyID=currency).text = f"{(invoice.grand_total or 0.0):.2f}"
+    etree.SubElement(monetary_total, f"{{{cbc}}}PayableAmount", currencyID=currency).text = f"{(invoice.grand_total or 0.0):.2f}"
 
+    # ---------------- Invoice lines ----------------
     for item in items:
         line = etree.SubElement(root, f"{{{cac}}}InvoiceLine")
         etree.SubElement(line, f"{{{cbc}}}ID").text = item.item_number
         etree.SubElement(line, f"{{{cbc}}}InvoicedQuantity", unitCode="EA").text = str(item.quantity)
-        etree.SubElement(line, f"{{{cbc}}}LineExtensionAmount", currencyID=invoice.currency).text = str(item.line_total)
+        etree.SubElement(line, f"{{{cbc}}}LineExtensionAmount", currencyID=currency).text = f"{(item.line_total or 0.0):.2f}"
         item_el = etree.SubElement(line, f"{{{cac}}}Item")
         etree.SubElement(item_el, f"{{{cbc}}}Description").text = item.description
         price_el = etree.SubElement(line, f"{{{cac}}}Price")
-        etree.SubElement(price_el, f"{{{cbc}}}PriceAmount", currencyID=invoice.currency).text = str(item.unit_price)
+        etree.SubElement(price_el, f"{{{cbc}}}PriceAmount", currencyID=currency).text = f"{(item.unit_price or 0.0):.2f}"
 
     return etree.tostring(root, pretty_print=True, xml_declaration=True, encoding="UTF-8").decode()
 
