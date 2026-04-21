@@ -24,6 +24,7 @@ class InvoiceCreate(BaseModel):
     buyer_address: str
     buyer_email: str
     currency: str = "AUD"
+    issue_date: Optional[date] = None
     due_date: date
     notes: Optional[str] = None
     items: List[LineItemCreate] = Field(min_length=1)
@@ -38,8 +39,10 @@ class InvoiceUpdate(BaseModel):
     client_name: Optional[str] = None
     client_email: Optional[str] = None
     currency: Optional[str] = None
+    issue_date: Optional[date] = None
     due_date: Optional[date] = None
     notes: Optional[str] = None
+    items: Optional[List[LineItemCreate]] = None
 
 class InvoiceResponse(BaseModel):
     invoice_id: str
@@ -54,6 +57,7 @@ class InvoiceResponse(BaseModel):
     client_name: str
     client_email: str
     currency: str
+    issue_date: Optional[date] = None
     due_date: date
     notes: Optional[str]
     subtotal: float

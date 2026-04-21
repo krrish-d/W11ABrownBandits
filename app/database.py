@@ -53,6 +53,7 @@ def ensure_schema_compatibility():
             # New columns added in the expanded feature set
             "owner_id":      "TEXT",
             "template_id":   "TEXT",
+            "issue_date":    "DATE",
         }
         with engine.begin() as conn:
             for col, ddl in invoice_additions.items():

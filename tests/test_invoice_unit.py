@@ -102,7 +102,7 @@ def test_generate_csv_returns_string():
 
 def test_generate_csv_has_header_row():
     result = generate_csv(make_invoice(), [make_item()])
-    assert "Invoice ID" in result
+    assert "invoice_number" in result
 
 def test_generate_csv_has_client_name():
     result = generate_csv(make_invoice(), [make_item()])
@@ -114,7 +114,7 @@ def test_generate_csv_has_item_description():
 
 def test_generate_csv_has_line_items_header():
     result = generate_csv(make_invoice(), [make_item()])
-    assert "Description" in result
+    assert "description" in result
 
 
 # PDF tests

@@ -7,7 +7,7 @@ from app.database import get_db
 from app.models.client import Client
 from app.models.user import User
 from app.schemas.client import ClientCreate, ClientUpdate, ClientResponse
-from app.services.auth import get_optional_current_user
+from app.services.auth import get_optional_current_user, scope_query_to_owner, user_owns_record
 from app.services.audit import log_audit
 
 router = APIRouter(prefix="/clients", tags=["Client Management"])
@@ -27,6 +27,8 @@ def create_client(
         **payload.model_dump(),
     )
     db.add(client)
+    # Flush so SQLAlchemy assigns client_id before we reference it in the audit log
+    db.flush()
     log_audit(db, "client", client.client_id, "create",
               changed_by=current_user.user_id if current_user else None)
     db.commit()
@@ -43,12 +45,7 @@ def list_clients(
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    q = db.query(Client)
-    if current_user:
-        # Show the user's own clients plus unowned ones
-        q = q.filter(
-            (Client.owner_id == current_user.user_id) | (Client.owner_id == None)  # noqa: E711
-        )
+    q = scope_query_to_owner(db.query(Client), Client.owner_id, current_user)
     if search:
         term = f"%{search}%"
         q = q.filter(Client.name.ilike(term) | Client.email.ilike(term))
@@ -59,9 +56,13 @@ def list_clients(
 # GET /clients/{client_id}
 # -------------------------------------------------------
 @router.get("/{client_id}", response_model=ClientResponse)
-def get_client(client_id: str, db: Session = Depends(get_db)):
+def get_client(
+    client_id: str,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
     client = db.query(Client).filter(Client.client_id == client_id).first()
-    if not client:
+    if not client or not user_owns_record(current_user, client.owner_id):
         raise HTTPException(status_code=404, detail="Client not found")
     return client
 
@@ -77,7 +78,7 @@ def update_client(
     current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     client = db.query(Client).filter(Client.client_id == client_id).first()
-    if not client:
+    if not client or not user_owns_record(current_user, client.owner_id):
         raise HTTPException(status_code=404, detail="Client not found")
 
     update_data = payload.model_dump(exclude_unset=True)
@@ -103,7 +104,7 @@ def delete_client(
     current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     client = db.query(Client).filter(Client.client_id == client_id).first()
-    if not client:
+    if not client or not user_owns_record(current_user, client.owner_id):
         raise HTTPException(status_code=404, detail="Client not found")
     log_audit(db, "client", client_id, "delete",
               changed_by=current_user.user_id if current_user else None)

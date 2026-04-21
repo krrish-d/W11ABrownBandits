@@ -5,18 +5,20 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from lxml import etree
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.client import Client
 from app.models.invoice import Invoice, LineItem
 from app.models.invoice_import import InvoiceImportToken
 from app.models.user import User
 from app.schemas.invoice import InvoiceCreate, InvoiceResponse, InvoiceUpdate
 from app.services.audit import log_audit
-from app.services.auth import get_optional_current_user
+from app.services.auth import get_optional_current_user, scope_query_to_owner, user_owns_record
+from app.services.transform import parse_csv, parse_generic_xml, parse_json, parse_pdf, parse_ubl_xml
 
 router = APIRouter(
     prefix="/invoice",
@@ -30,6 +32,15 @@ legacy_router = APIRouter(
 
 
 def generate_ubl_xml(invoice: Invoice, items: list) -> str:
+    """
+    Build a UBL 2.1 Invoice document that is structured to pass our UBL,
+    PEPPOL, and Australian rulesets by default. The extra PEPPOL/AU
+    fields (EndpointID, PaymentMeans, TaxTotal, PartyTaxScheme) are
+    injected with sensible defaults so no schema change to the Invoice
+    model is required.
+    """
+    import os
+
     nsmap = {
         None: "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
         "cac": "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
@@ -39,41 +50,85 @@ def generate_ubl_xml(invoice: Invoice, items: list) -> str:
     cbc = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
 
     root = etree.Element("Invoice", nsmap=nsmap)
+    currency = invoice.currency or "AUD"
 
     etree.SubElement(root, f"{{{cbc}}}UBLVersionID").text = "2.1"
     etree.SubElement(root, f"{{{cbc}}}ID").text = invoice.invoice_number
-    etree.SubElement(root, f"{{{cbc}}}IssueDate").text = str(invoice.due_date)
+    issue_date = getattr(invoice, "issue_date", None) or invoice.due_date
+    etree.SubElement(root, f"{{{cbc}}}IssueDate").text = str(issue_date)
+    etree.SubElement(root, f"{{{cbc}}}DueDate").text = str(invoice.due_date)
     etree.SubElement(root, f"{{{cbc}}}InvoiceTypeCode").text = "380"
-    etree.SubElement(root, f"{{{cbc}}}DocumentCurrencyCode").text = invoice.currency
+    etree.SubElement(root, f"{{{cbc}}}DocumentCurrencyCode").text = currency
 
+    # ---------------- Supplier party ----------------
     supplier = etree.SubElement(root, f"{{{cac}}}AccountingSupplierParty")
     supplier_party = etree.SubElement(supplier, f"{{{cac}}}Party")
+    # EndpointID satisfies PEPPOL's party-identification requirement. We use
+    # the supplier email with schemeID="EM" when no registered PEPPOL ID is
+    # available.
+    etree.SubElement(
+        supplier_party, f"{{{cbc}}}EndpointID", schemeID="EM"
+    ).text = invoice.seller_email or "unknown@example.com"
     supplier_name_el = etree.SubElement(supplier_party, f"{{{cac}}}PartyName")
     etree.SubElement(supplier_name_el, f"{{{cbc}}}Name").text = invoice.seller_name
     supplier_address = etree.SubElement(supplier_party, f"{{{cac}}}PostalAddress")
     etree.SubElement(supplier_address, f"{{{cbc}}}StreetName").text = invoice.seller_address
+    country_el = etree.SubElement(supplier_address, f"{{{cac}}}Country")
+    etree.SubElement(country_el, f"{{{cbc}}}IdentificationCode").text = "AU" if currency == "AUD" else "XX"
+    # Supplier ABN for Australian ruleset. Driven by env var so any tenant
+    # that has their ABN configured gets a fully AU-compliant invoice.
+    supplier_abn = os.getenv("DEFAULT_SUPPLIER_ABN", "").strip()
+    if supplier_abn:
+        tax_scheme_el = etree.SubElement(supplier_party, f"{{{cac}}}PartyTaxScheme")
+        etree.SubElement(tax_scheme_el, f"{{{cbc}}}CompanyID").text = supplier_abn
+        scheme_inner = etree.SubElement(tax_scheme_el, f"{{{cac}}}TaxScheme")
+        etree.SubElement(scheme_inner, f"{{{cbc}}}ID").text = "GST"
+    if invoice.seller_email:
+        supplier_contact = etree.SubElement(supplier_party, f"{{{cac}}}Contact")
+        etree.SubElement(supplier_contact, f"{{{cbc}}}ElectronicMail").text = invoice.seller_email
 
+    # ---------------- Customer party ----------------
     customer = etree.SubElement(root, f"{{{cac}}}AccountingCustomerParty")
     customer_party = etree.SubElement(customer, f"{{{cac}}}Party")
+    etree.SubElement(
+        customer_party, f"{{{cbc}}}EndpointID", schemeID="EM"
+    ).text = invoice.buyer_email or "unknown@example.com"
     customer_name_el = etree.SubElement(customer_party, f"{{{cac}}}PartyName")
     etree.SubElement(customer_name_el, f"{{{cbc}}}Name").text = invoice.buyer_name
     customer_address = etree.SubElement(customer_party, f"{{{cac}}}PostalAddress")
     etree.SubElement(customer_address, f"{{{cbc}}}StreetName").text = invoice.buyer_address
+    if invoice.buyer_email:
+        customer_contact = etree.SubElement(customer_party, f"{{{cac}}}Contact")
+        etree.SubElement(customer_contact, f"{{{cbc}}}ElectronicMail").text = invoice.buyer_email
 
+    # ---------------- PaymentMeans (PEPPOL recommendation) ----------------
+    payment_means = etree.SubElement(root, f"{{{cac}}}PaymentMeans")
+    # Code 30 = credit transfer (most common default for B2B/B2G)
+    etree.SubElement(payment_means, f"{{{cbc}}}PaymentMeansCode").text = "30"
+    etree.SubElement(payment_means, f"{{{cbc}}}PaymentDueDate").text = str(invoice.due_date)
+
+    # ---------------- TaxTotal (PEPPOL critical, AU GST) ----------------
+    tax_total_el = etree.SubElement(root, f"{{{cac}}}TaxTotal")
+    etree.SubElement(
+        tax_total_el, f"{{{cbc}}}TaxAmount", currencyID=currency
+    ).text = f"{(invoice.tax_total or 0.0):.2f}"
+
+    # ---------------- Legal monetary total ----------------
     monetary_total = etree.SubElement(root, f"{{{cac}}}LegalMonetaryTotal")
-    etree.SubElement(monetary_total, f"{{{cbc}}}LineExtensionAmount", currencyID=invoice.currency).text = str(invoice.subtotal)
-    etree.SubElement(monetary_total, f"{{{cbc}}}TaxInclusiveAmount", currencyID=invoice.currency).text = str(invoice.grand_total)
-    etree.SubElement(monetary_total, f"{{{cbc}}}PayableAmount", currencyID=invoice.currency).text = str(invoice.grand_total)
+    etree.SubElement(monetary_total, f"{{{cbc}}}LineExtensionAmount", currencyID=currency).text = f"{(invoice.subtotal or 0.0):.2f}"
+    etree.SubElement(monetary_total, f"{{{cbc}}}TaxInclusiveAmount", currencyID=currency).text = f"{(invoice.grand_total or 0.0):.2f}"
+    etree.SubElement(monetary_total, f"{{{cbc}}}PayableAmount", currencyID=currency).text = f"{(invoice.grand_total or 0.0):.2f}"
 
+    # ---------------- Invoice lines ----------------
     for item in items:
         line = etree.SubElement(root, f"{{{cac}}}InvoiceLine")
         etree.SubElement(line, f"{{{cbc}}}ID").text = item.item_number
         etree.SubElement(line, f"{{{cbc}}}InvoicedQuantity", unitCode="EA").text = str(item.quantity)
-        etree.SubElement(line, f"{{{cbc}}}LineExtensionAmount", currencyID=invoice.currency).text = str(item.line_total)
+        etree.SubElement(line, f"{{{cbc}}}LineExtensionAmount", currencyID=currency).text = f"{(item.line_total or 0.0):.2f}"
         item_el = etree.SubElement(line, f"{{{cac}}}Item")
         etree.SubElement(item_el, f"{{{cbc}}}Description").text = item.description
         price_el = etree.SubElement(line, f"{{{cac}}}Price")
-        etree.SubElement(price_el, f"{{{cbc}}}PriceAmount", currencyID=invoice.currency).text = str(item.unit_price)
+        etree.SubElement(price_el, f"{{{cbc}}}PriceAmount", currencyID=currency).text = f"{(item.unit_price or 0.0):.2f}"
 
     return etree.tostring(root, pretty_print=True, xml_declaration=True, encoding="UTF-8").decode()
 
@@ -113,19 +168,20 @@ def generate_csv(invoice: Invoice, items: list) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
 
-    writer.writerow(["Invoice ID", "Invoice Number", "Status", "Seller Name",
-                     "Seller Address", "Seller Email", "Buyer Name", "Buyer Address",
-                     "Buyer Email", "Currency", "Due Date",
-                     "Subtotal", "Tax Total", "Grand Total"])
+    # Column names match parse_csv() in services/transform.py (snake_case)
+    writer.writerow(["invoice_number", "currency", "seller_name", "seller_address",
+                     "seller_email", "buyer_name", "buyer_address", "buyer_email",
+                     "issue_date", "due_date", "subtotal", "tax_total", "grand_total"])
     writer.writerow([
-        invoice.invoice_id, invoice.invoice_number, invoice.status,
+        invoice.invoice_number, invoice.currency,
         invoice.seller_name, invoice.seller_address, invoice.seller_email,
-        invoice.buyer_name, invoice.buyer_address, invoice.buyer_email, invoice.currency,
-        str(invoice.due_date), invoice.subtotal, invoice.tax_total, invoice.grand_total
+        invoice.buyer_name, invoice.buyer_address, invoice.buyer_email,
+        str(getattr(invoice, "issue_date", None) or invoice.due_date), str(invoice.due_date),
+        invoice.subtotal, invoice.tax_total, invoice.grand_total
     ])
 
     writer.writerow([])
-    writer.writerow(["Item Number", "Description", "Quantity", "Unit Price", "Tax Rate (%)", "Line Total"])
+    writer.writerow(["item_number", "description", "quantity", "unit_price", "tax_rate", "line_total"])
     for item in items:
         writer.writerow([
             item.item_number, item.description, item.quantity, item.unit_price,
@@ -166,6 +222,7 @@ def generate_pdf(invoice: Invoice, items: list) -> bytes:
         ["Buyer Address:", invoice.buyer_address],
         ["Buyer Email:", invoice.buyer_email],
         ["Currency:", invoice.currency],
+        ["Issue Date:", str(getattr(invoice, "issue_date", None) or invoice.due_date)],
         ["Due Date:", str(invoice.due_date)],
         ["Status:", invoice.status],
     ]
@@ -223,17 +280,18 @@ def generate_pdf(invoice: Invoice, items: list) -> bytes:
     return buffer.getvalue()
 
 
-def _auto_mark_overdue(db: Session) -> int:
-    """Mark all past-due, non-terminal invoices as overdue. Returns count changed."""
+def _auto_mark_overdue(db: Session, current_user: Optional[User] = None) -> int:
+    """
+    Mark past-due, non-terminal invoices as overdue for the current user's
+    scope only. Returns count changed.
+    """
     today = date.today()
-    candidates = (
-        db.query(Invoice)
-        .filter(
-            Invoice.due_date < today,
-            Invoice.status.notin_(["paid", "cancelled", "overdue"]),
-        )
-        .all()
+    q = db.query(Invoice).filter(
+        Invoice.due_date < today,
+        Invoice.status.notin_(["paid", "cancelled", "overdue"]),
     )
+    q = scope_query_to_owner(q, Invoice.owner_id, current_user)
+    candidates = q.all()
     for inv in candidates:
         log_audit(db, "invoice", inv.invoice_id, "status_change",
                   changed_by="system",
@@ -285,6 +343,7 @@ def create_invoice(
         client_name=invoice_data.buyer_name,
         client_email=invoice_data.buyer_email,
         currency=invoice_data.currency,
+        issue_date=invoice_data.issue_date or date.today(),
         due_date=invoice_data.due_date,
         notes=invoice_data.notes,
         subtotal=subtotal,
@@ -297,6 +356,23 @@ def create_invoice(
     for item_data in line_items_data:
         line_item = LineItem(invoice_id=new_invoice.invoice_id, **item_data)
         db.add(line_item)
+
+    # Auto-create buyer as a reusable client profile if not already present.
+    buyer_email = invoice_data.buyer_email.strip()
+    existing_client_query = db.query(Client).filter(Client.email.ilike(buyer_email))
+    if current_user:
+        existing_client_query = existing_client_query.filter(Client.owner_id == current_user.user_id)
+    else:
+        existing_client_query = existing_client_query.filter(Client.owner_id == None)  # noqa: E711
+    existing_client = existing_client_query.first()
+    if not existing_client:
+        db.add(Client(
+            owner_id=current_user.user_id if current_user else None,
+            name=invoice_data.buyer_name,
+            email=buyer_email,
+            address=invoice_data.buyer_address,
+            currency=invoice_data.currency,
+        ))
 
     log_audit(db, "invoice", new_invoice.invoice_id, "create",
               changed_by=current_user.user_id if current_user else None)
@@ -321,13 +397,14 @@ def list_invoices(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    # Auto-mark overdue before returning
-    changed = _auto_mark_overdue(db)
+    # Auto-mark overdue within the caller's scope only
+    changed = _auto_mark_overdue(db, current_user)
     if changed:
         db.commit()
 
-    q = db.query(Invoice)
+    q = scope_query_to_owner(db.query(Invoice), Invoice.owner_id, current_user)
 
     if status:
         statuses = [s.strip() for s in status.split(",") if s.strip()]
@@ -383,7 +460,7 @@ def update_invoice_status(
             detail=f"Invalid status '{status}'. Must be one of: {', '.join(sorted(VALID_STATUSES))}",
         )
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
-    if not invoice:
+    if not invoice or not user_owns_record(current_user, invoice.owner_id):
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     old_status = invoice.status
@@ -400,8 +477,11 @@ def update_invoice_status(
 # POST /invoice/check-overdue – manually trigger overdue detection
 # -------------------------------------------------------
 @router.post("/check-overdue", status_code=200)
-def check_overdue(db: Session = Depends(get_db)):
-    count = _auto_mark_overdue(db)
+def check_overdue(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    count = _auto_mark_overdue(db, current_user)
     db.commit()
     return {"marked_overdue": count}
 
@@ -495,10 +575,11 @@ def get_invoice(
         default="json",
         description="Output format: json, ubl, xml, csv, pdf"
     ),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
-    if not invoice:
+    if not invoice or not user_owns_record(current_user, invoice.owner_id):
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     items = db.query(LineItem).filter(LineItem.invoice_id == invoice_id).all()
@@ -541,13 +622,55 @@ def update_invoice(
     current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
-    if not invoice:
+    if not invoice or not user_owns_record(current_user, invoice.owner_id):
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     update_data = updates.model_dump(exclude_unset=True)
+    incoming_items = update_data.pop("items", None)
+
     old_values = {k: str(getattr(invoice, k)) for k in update_data}
     for field, value in update_data.items():
         setattr(invoice, field, value)
+
+    if incoming_items is not None:
+        existing_items = db.query(LineItem).filter(LineItem.invoice_id == invoice_id).all()
+        old_item_count = len(existing_items)
+        old_subtotal = invoice.subtotal
+        old_tax_total = invoice.tax_total
+        old_grand_total = invoice.grand_total
+
+        for old_item in existing_items:
+            db.delete(old_item)
+
+        subtotal = 0.0
+        tax_total = 0.0
+        for item in incoming_items:
+            line_total = round(item["quantity"] * item["unit_price"], 2)
+            tax_amount = round(line_total * (item["tax_rate"] / 100), 2)
+            subtotal += line_total
+            tax_total += tax_amount
+            db.add(LineItem(
+                invoice_id=invoice_id,
+                item_number=item["item_number"],
+                description=item["description"],
+                quantity=item["quantity"],
+                unit_price=item["unit_price"],
+                tax_rate=item["tax_rate"],
+                line_total=line_total,
+            ))
+
+        invoice.subtotal = round(subtotal, 2)
+        invoice.tax_total = round(tax_total, 2)
+        invoice.grand_total = round(invoice.subtotal + invoice.tax_total, 2)
+
+        old_values["items"] = f"{old_item_count} items"
+        update_data["items"] = f"{len(incoming_items)} items"
+        old_values["subtotal"] = str(old_subtotal)
+        old_values["tax_total"] = str(old_tax_total)
+        old_values["grand_total"] = str(old_grand_total)
+        update_data["subtotal"] = invoice.subtotal
+        update_data["tax_total"] = invoice.tax_total
+        update_data["grand_total"] = invoice.grand_total
 
     # Keep legacy client_* fields aligned with buyer_* values.
     if "buyer_name" in update_data:
@@ -574,7 +697,7 @@ def delete_invoice(
     current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
-    if not invoice:
+    if not invoice or not user_owns_record(current_user, invoice.owner_id):
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     log_audit(db, "invoice", invoice_id, "delete",
@@ -584,15 +707,73 @@ def delete_invoice(
     return {"message": f"Invoice {invoice_id} deleted successfully"}
 
 
+# -------------------------------------------------------
+# POST /invoice/parse-file – parse an uploaded invoice file into form-friendly JSON
+# -------------------------------------------------------
+@router.post("/parse-file")
+async def parse_invoice_file(file: UploadFile = File(...)):
+    """
+    Accept a .json, .csv, .xml (UBL or generic), or .pdf invoice file and return
+    the extracted fields as a JSON object ready to pre-fill the compose form.
+    No authentication required.
+    """
+    filename = file.filename or ""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    content = await file.read()
+
+    try:
+        if ext == "json":
+            data = parse_json(content.decode(errors="replace"))
+        elif ext == "csv":
+            data = parse_csv(content.decode(errors="replace"))
+        elif ext in ("xml",):
+            text = content.decode(errors="replace")
+            # Detect UBL by namespace — parse_ubl_xml silently returns nulls
+            # for non-UBL XML, so we can't rely on a try/except fallback.
+            if "urn:oasis:names:specification:ubl" in text[:2000]:
+                data = parse_ubl_xml(text)
+            else:
+                data = parse_generic_xml(text)
+        elif ext == "pdf":
+            data = parse_pdf(content)
+        else:
+            # Sniff content if extension is missing/unknown
+            text = content.decode(errors="replace").lstrip()
+            if text.startswith("{"):
+                data = parse_json(text)
+            elif text.startswith("<?xml") or "<Invoice" in text[:300]:
+                if "urn:oasis:names:specification:ubl" in text[:2000]:
+                    data = parse_ubl_xml(text)
+                else:
+                    data = parse_generic_xml(text)
+            elif "seller_name" in text or "buyer_name" in text or "invoice_number" in text:
+                data = parse_csv(text)
+            else:
+                raise HTTPException(status_code=400, detail="Could not detect file format. Please use .json, .csv, .xml, or .pdf")
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return data
+
+
 # Legacy Sprint 1 routes kept accessible in parallel
 @legacy_router.post("/", response_model=InvoiceResponse, status_code=201)
-def legacy_create_invoice(invoice_data: InvoiceCreate, db: Session = Depends(get_db)):
-    return create_invoice(invoice_data, db)
+def legacy_create_invoice(
+    invoice_data: InvoiceCreate,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    return create_invoice(invoice_data, db, current_user)
 
 
 @legacy_router.get("/", response_model=list[InvoiceResponse])
-def legacy_list_invoices(db: Session = Depends(get_db)):
-    return list_invoices(db)
+def legacy_list_invoices(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    return list_invoices(db=db, current_user=current_user)
 
 
 @legacy_router.get("/{invoice_id}")
@@ -602,16 +783,26 @@ def legacy_get_invoice(
         default="json",
         description="Output format: json, ubl, xml, csv, pdf"
     ),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    return get_invoice(invoice_id, format, db)
+    return get_invoice(invoice_id, format, db, current_user)
 
 
 @legacy_router.put("/{invoice_id}", response_model=InvoiceResponse)
-def legacy_update_invoice(invoice_id: str, updates: InvoiceUpdate, db: Session = Depends(get_db)):
-    return update_invoice(invoice_id, updates, db)
+def legacy_update_invoice(
+    invoice_id: str,
+    updates: InvoiceUpdate,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    return update_invoice(invoice_id, updates, db, current_user)
 
 
 @legacy_router.delete("/{invoice_id}", status_code=200)
-def legacy_delete_invoice(invoice_id: str, db: Session = Depends(get_db)):
-    return delete_invoice(invoice_id, db)
+def legacy_delete_invoice(
+    invoice_id: str,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    return delete_invoice(invoice_id, db, current_user)

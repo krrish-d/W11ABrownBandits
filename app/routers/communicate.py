@@ -1,5 +1,6 @@
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -8,16 +9,29 @@ from app.database import get_db
 from app.models.communication import CommunicationLog
 from app.models.invoice import Invoice, LineItem
 from app.models.invoice_import import InvoiceImportToken
+from app.models.user import User
 from app.schemas.communication import (
     CommunicationRequest,
     CommunicationLogResponse,
     CommunicationSendResponse,
 )
+from app.services.auth import get_optional_current_user, user_owns_record
 from app.services.communicate import (
     send_invoice_email,
     send_invoice_with_import_link,
     send_payment_reminder,
 )
+
+
+def _get_owned_invoice_or_404(
+    db: Session,
+    invoice_id: str,
+    current_user: Optional[User],
+) -> Invoice:
+    invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
+    if not invoice or not user_owns_record(current_user, invoice.owner_id):
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return invoice
 
 router = APIRouter(
     prefix="/communicate",
@@ -60,6 +74,7 @@ def send_invoice_with_link(
     invoice_id: str,
     recipient_email: str,
     db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     """
     Fetches the invoice from the database, generates a one-time signed import
@@ -68,9 +83,7 @@ def send_invoice_with_link(
 
     The import token is valid for 7 days and can only be used once.
     """
-    invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    invoice = _get_owned_invoice_or_404(db, invoice_id, current_user)
 
     items = db.query(LineItem).filter(LineItem.invoice_id == invoice_id).all()
 
@@ -125,10 +138,12 @@ def send_invoice_with_link(
 #   Manually send a payment reminder for an overdue/unpaid invoice.
 # -------------------------------------------------------
 @router.post("/remind/{invoice_id}", status_code=200)
-def send_reminder(invoice_id: str, db: Session = Depends(get_db)):
-    invoice = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
-    if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+def send_reminder(
+    invoice_id: str,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    invoice = _get_owned_invoice_or_404(db, invoice_id, current_user)
     if not invoice.buyer_email:
         raise HTTPException(status_code=422, detail="Invoice has no buyer email")
 
@@ -154,8 +169,23 @@ def send_reminder(invoice_id: str, db: Session = Depends(get_db)):
 # GET /communicate/logs — List all sent invoice logs
 # -------------------------------------------------------
 @router.get("/logs", response_model=list[CommunicationLogResponse])
-def get_communication_logs(db: Session = Depends(get_db)):
-    return db.query(CommunicationLog).order_by(CommunicationLog.sent_at.desc()).all()
+def get_communication_logs(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
+    """
+    Returns communication logs for invoices owned by the caller. Logs that
+    reference invoices outside the caller's scope (e.g. raw-XML sends via
+    /communicate/send with no matching DB row) are always hidden.
+    """
+    q = db.query(CommunicationLog).join(
+        Invoice, Invoice.invoice_id == CommunicationLog.invoice_id
+    )
+    if current_user is not None:
+        q = q.filter(Invoice.owner_id == current_user.user_id)
+    else:
+        q = q.filter(Invoice.owner_id.is_(None))
+    return q.order_by(CommunicationLog.sent_at.desc()).all()
 
 
 # -------------------------------------------------------
