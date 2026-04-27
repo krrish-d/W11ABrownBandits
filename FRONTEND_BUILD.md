@@ -1,430 +1,329 @@
-# E-Invoice API — Frontend Build Specification
+# InvoiceFlow Frontend Build Specification
 
 ## Project Overview
 
-This is the frontend for an **E-Invoice API ecosystem** built for small and medium businesses (SMBs). The system handles the full invoice lifecycle: creating UBL 2.1 XML invoices, transforming between formats, validating against compliance rulesets, and sending invoices via email — all without the user needing any XML knowledge.
+InvoiceFlow is the current Next.js frontend for an authenticated invoice management platform aimed at Australian SMB users. The application now covers the full operational workflow around invoices: composing, importing, listing, transforming, validating, sending, tracking payments, managing clients, defining recurring rules, maintaining templates, reviewing analytics, and checking audit history.
 
-The frontend is a **proof-of-concept web application** that demonstrates all four API services in a unified interface.
+The current sprint expands the earlier proof of concept into a broader SaaS-style dashboard. Instead of focusing only on the four original services, the frontend now acts as a central business console for invoice lifecycle management and compliance-focused operations.
 
----
+## Tech Stack
 
-## Tech Stack Recommendation
+- Framework: Next.js App Router
+- Styling: Tailwind CSS with shared UI components
+- Forms: React Hook Form and Zod on the compose page
+- HTTP Client: Axios and native fetch
+- Charts: Recharts for analytics visualisation
+- Icons: Lucide React
+- Authentication: token stored in localStorage and cookie, with route guarding in the app shell
 
-- **Framework**: React (Vite)
-- **Styling**: Tailwind CSS
-- **HTTP Client**: Axios or native fetch
-- **Icons**: Lucide React
-- **Routing**: React Router v6
-- **Notifications/Toasts**: react-hot-toast
-- **File Download**: Native browser API
-- **Code/XML Display**: react-syntax-highlighter (optional, for showing XML output)
+## Shared Layout
 
----
+Elements:
 
-## Design Direction
+- Responsive application shell with the InvoiceFlow brand and subtitle "Clean invoicing with modern automation"
+- Desktop sidebar navigation with links for Dashboard, Invoices, Compose, Clients, Analytics, Payments, Transform, Validate, Templates, Recurring, and Audit
+- Mobile top navigation with horizontally scrollable route links
+- Active navigation state shown with highlighted styling based on the current route
+- Theme switcher in the desktop sidebar
+- Login and Logout controls depending on authentication state
+- Session check before protected pages render, redirecting unauthenticated users to Login
 
-**Aesthetic**: Clean, professional, utilitarian — but with personality. Think a well-designed SaaS dashboard: dark navy sidebar, white content area, sharp typography, subtle card shadows. Not corporate-bland, not flashy. Functional but polished.
+Reasoning:
 
-**Fonts**:
-- Display/headings: `DM Serif Display` or `Playfair Display`
-- Body/UI: `DM Sans` or `Outfit`
+The shared layout establishes InvoiceFlow as a single authenticated workspace rather than a collection of disconnected service demos. Keeping the navigation persistent gives SMB users fast access to daily workflows such as creating invoices, checking payments, and reviewing clients, while also exposing more administrative tools like audit logs and recurring rules without hiding them in secondary menus.
 
-**Colour Palette**:
-```css
---primary: #1a56db        /* Blue — CTAs, active states */
---primary-dark: #1e429f
---surface: #ffffff
---surface-muted: #f8fafc
---border: #e2e8f0
---text: #0f172a
---text-muted: #64748b
---success: #10b981
---warning: #f59e0b
---error: #ef4444
---sidebar-bg: #0f172a      /* Dark navy sidebar */
---sidebar-text: #cbd5e1
---sidebar-active: #1a56db
-```
+The authentication gate is important because invoices, client records, payments, and audit data are business-sensitive. The responsive navigation keeps the interface practical across desktop and smaller screens, while the active route styling helps users stay oriented as they move between closely related invoice tasks.
 
-**Layout**: Fixed left sidebar (240px), main content area scrollable. Top header bar with page title and breadcrumb.
+## Pages
 
----
+Dashboard:
 
-## Pages & Routes
-
-| Route | Page Name | Description |
-|---|---|---|
-| `/` | Dashboard | Overview / landing with pipeline explainer |
-| `/create` | Create Invoice | Form to create a new invoice |
-| `/invoices` | Invoice Library | List all stored invoices |
-| `/invoices/:id` | Invoice Detail | View/download a single invoice |
-| `/transform` | Transform | Convert invoice between formats |
-| `/validate` | Validate | Upload and validate a UBL XML invoice |
-| `/send` | Send Invoice | Email an invoice to a recipient |
+Elements:
 
----
+- Sidebar navigation with "Dashboard" highlighted as active
+- Page heading "Dashboard" with a personalised welcome message when user details are available
+- "New Invoice" primary CTA linking to the Compose page
+- Four KPI cards showing Total, Pending, Paid, and Overdue invoice counts
+- Financial KPI row showing Total invoiced, Paid this month, and Outstanding balance
+- "Validation & transformation" card with quick links to Transform and Validate
+- "Needs attention" section showing overdue invoices and invoices due within 7 days
+- "Recent invoices" section showing the latest five invoice records with links to invoice details
+- Loading skeletons and empty states for invoice data
 
-## API Base URL
+Reasoning:
 
-```js
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "https://your-api.railway.app"
-```
+The Dashboard now acts as an operational overview rather than only a welcome page. It gives users an immediate view of invoice volume, payment status, outstanding money, and urgent follow-up items, which is more useful for a working SMB than a static product explanation.
 
-Store this in a `.env` file:
-```
-VITE_API_BASE_URL=https://your-railway-url.up.railway.app
-```
-
----
-
-## Page Specifications
-
----
-
-### 1. Dashboard (`/`)
-
-**Purpose**: Welcome screen explaining the product and showing system status.
-
-**Layout**:
-- Hero section: headline ("Compliant E-Invoicing for Australian SMBs"), subheading, two CTA buttons ("Create Invoice" → `/create`, "View Invoices" → `/invoices`)
-- Pipeline diagram: visual 4-step flow showing `Create → Transform → Validate → Send` with icons
-- "Quick Actions" cards: 4 cards for each service with short description and a link
-- Health status row: shows live status of each service by calling `/health` on each
+The quick links to Transform and Validate preserve the compliance workflow from the previous sprint, while the needs-attention list makes the page action-oriented. Users can quickly spot overdue or due-soon invoices, open a recent record, or start a new invoice from a single central hub.
 
-**API Calls**:
-```
-GET /health   → show green/red dot for service status
-```
-
-**Notes**:
-- Health check should auto-run on page load
-- Pipeline diagram can be SVG or pure CSS/HTML — no external chart libs needed
-
----
-
-### 2. Create Invoice (`/create`)
-
-**Purpose**: Fill in invoice details and generate a UBL 2.1 invoice.
-
-**Form Fields**:
-
-**Seller Details**
-- Seller Name (text, required)
-- Seller Email (email, required)
-
-**Buyer Details**
-- Buyer Name (text, required)
-- Buyer Email (email, required)
-
-**Invoice Settings**
-- Due Date (date picker, required)
-- Currency Code (select: AUD, USD, GBP, EUR — default AUD)
-- Output Format (select: `ubl_xml`, `json`, `csv`, `pdf`, `generic_xml` — default `ubl_xml`)
-
-**Line Items** (dynamic — start with 1, allow "Add Line Item" button)
-Each line item row:
-- Description (text)
-- Quantity (number, min 1)
-- Unit Price (number, min 0)
-- Tax % (number, default 10)
-- [Delete row button] — disabled if only 1 row
-
-Auto-calculated display (read-only):
-- Line Total = Quantity × Unit Price
-- Invoice Total (sum of all line totals + tax)
-
-**Submit Button**: "Generate Invoice"
-
-**On Success**:
-- Show a success banner with the returned Invoice ID
-- Display the output (XML/JSON rendered in a code block, or PDF download link, or CSV download)
-- Show buttons: "View All Invoices", "Validate this Invoice", "Send this Invoice"
-
-**API Call**:
-```
-POST /invoices
-Body: {
-  seller_name, seller_email,
-  buyer_name, buyer_email,
-  due_date,
-  currency_code,
-  tax_percentage,         // from first line item or global
-  line_items: [{ description, quantity, unit_price, tax_percentage }],
-  format                  // query param or body field — check your API
-}
-```
-
-**Error Handling**:
-- Show inline validation for empty required fields before submit
-- Show API error message in a red banner if the request fails
-
----
-
-### 3. Invoice Library (`/invoices`)
-
-**Purpose**: Browse all stored invoices.
-
-**Layout**:
-- Search bar (filter by ID or buyer/seller name client-side)
-- Table or card grid of invoices with columns:
-  - Invoice ID
-  - Buyer Name
-  - Seller Name
-  - Due Date
-  - Total Amount
-  - Actions: [View] [Delete]
-- Empty state illustration if no invoices
-
-**API Calls**:
-```
-GET /invoices              → list all invoices
-DELETE /invoices/{id}      → delete an invoice (with confirm dialog)
-```
-
-**Notes**:
-- Clicking a row or "View" navigates to `/invoices/:id`
-- Delete should ask for confirmation before calling the API
-- Show a loading skeleton while fetching
-
----
-
-### 4. Invoice Detail (`/invoices/:id`)
-
-**Purpose**: View a specific invoice and download in multiple formats.
-
-**Layout**:
-- Invoice summary card (buyer, seller, due date, total, currency)
-- Line items table (description, qty, unit price, tax, line total)
-- Download section: format selector dropdown + "Download" button
-- Action buttons: "Validate", "Send", "Edit", "Delete"
-
-**API Calls**:
-```
-GET /invoices/{id}?format=ubl_xml    → get invoice in chosen format
-PUT /invoices/{id}                   → update invoice (opens edit modal)
-DELETE /invoices/{id}                → delete invoice
-```
-
-**Edit Modal**:
-- Pre-filled with current invoice data
-- Same fields as the Create form (simplified — no line item add/remove needed)
-- On save: PATCH/PUT the invoice and refresh
-
-**Download Logic**:
-- For XML/JSON: open in new tab or trigger browser download via Blob
-- For PDF: trigger download
-- For CSV: trigger download
-
----
-
-### 5. Transform (`/transform`)
-
-**Purpose**: Upload an invoice file and convert it to another format.
-
-**Layout**:
-- Two dropdowns side by side: "Input Format" and "Output Format"
-  - Supported inputs: `json`, `csv`, `ubl_xml`
-  - Supported outputs: `ubl_xml`, `json`, `csv`, `pdf`
-- File upload area (drag-and-drop style) OR text area for paste
-  - If JSON or XML selected as input: show a textarea for paste
-  - If CSV selected: show file upload
-- "Convert" button
-- Result area: show output in code block (XML/JSON/CSV) or download button (PDF)
-
-**API Calls**:
-```
-GET /transform/formats         → populate the dropdown options dynamically
-POST /transform                → send { input_format, output_format, content/file }
-```
-
-**Notes**:
-- Fetch supported formats on page load from `/transform/formats`
-- Disable incompatible output formats based on selected input
-- Show a loading spinner during conversion
-
----
-
-### 6. Validate (`/validate`)
-
-**Purpose**: Upload a UBL XML invoice and get a validation report.
-
-**Layout**:
-- Ruleset selector (radio buttons or tabs): `ubl` | `peppol` | `australian`
-  - Short description under each option explaining what it checks
-- XML input area: textarea for paste OR file upload (`.xml`)
-- "Validate" button
-- Results panel (shown after submit):
-  - Big status badge: ✅ VALID or ❌ INVALID
-  - Summary: "X errors found, Y warnings"
-  - Results table:
-    - Columns: Rule ID | Severity | Description
-    - Severity badge: red for Critical, yellow for Warning
-  - Expandable "Raw Response" section (JSON toggle)
-
-**API Calls**:
-```
-GET /validate/rulesets          → populate ruleset options with descriptions
-POST /validate?ruleset=ubl      → { xml_content: "..." }
-```
-
-**Notes**:
-- Fetch rulesets on page load
-- Colour-code the results table rows by severity
-- If valid, show a green "All checks passed" message instead of an empty table
-
----
-
-### 7. Send Invoice (`/send`)
-
-**Purpose**: Email a UBL XML invoice to a recipient.
-
-**Layout**:
-- Option A: Select from stored invoices (dropdown populated from `/invoices`)
-- Option B: Paste raw UBL XML directly (toggle/tab)
-- Recipient Email (text, required)
-- Sender Name (text, optional)
-- Subject Line (text, optional, placeholder: "Invoice from [Seller Name]")
-- Message Body (textarea, optional)
-- "Send Invoice" button
-
-**On Success**:
-- Show confirmation card with:
-  - ✅ Sent successfully
-  - Recipient email
-  - Invoice ID
-  - Timestamp
-
-**API Call**:
-```
-POST /send   (or /communicate/send — check your API route)
-Body: {
-  xml_content,        // UBL XML string
-  recipient_email,
-  sender_name,
-  subject,
-  message_body
-}
-```
-
-**Notes**:
-- Validate email format client-side before submitting
-- Show clear error if the email send fails
-
----
-
-## Shared Components
-
-### Sidebar Navigation
-```
-Logo: "InvoiceFlow" (or your team's product name)
-Nav items (with icons):
-  - Dashboard         (LayoutDashboard icon)
-  - Create Invoice    (FilePlus icon)
-  - Invoice Library   (FileText icon)
-  - Transform         (ArrowLeftRight icon)
-  - Validate          (ShieldCheck icon)
-  - Send Invoice      (Send icon)
-```
-
-Active state: highlight with `--primary` colour and left border indicator.
-
-### Top Header Bar
-- Page title (dynamic, based on current route)
-- Optional: breadcrumb (e.g. "Invoices / INV-0042")
-
-### Toast Notifications
-Use `react-hot-toast` for:
-- ✅ Success: "Invoice created successfully"
-- ❌ Error: "Failed to connect to API — check your configuration"
-
-### Loading States
-- Button spinners during API calls (disable button while loading)
-- Skeleton loaders for tables (3 placeholder rows)
-
-### Empty States
-- Show a helpful message + icon when tables are empty
-- e.g. "No invoices yet — create your first one"
-
-### Error Boundary / API Error Banner
-If the API base URL is not configured or returns 5xx:
-- Show a yellow warning banner at the top of the page
-- "Could not reach the API. Check your VITE_API_BASE_URL setting."
-
----
-
-## File Structure
-
-```
-src/
-├── api/
-│   └── client.js              # Axios instance + base URL config
-├── components/
-│   ├── Sidebar.jsx
-│   ├── Header.jsx
-│   ├── LineItemRow.jsx
-│   ├── InvoiceTable.jsx
-│   ├── ValidationResults.jsx
-│   ├── FormatDownloader.jsx
-│   └── StatusBadge.jsx
-├── pages/
-│   ├── Dashboard.jsx
-│   ├── CreateInvoice.jsx
-│   ├── InvoiceLibrary.jsx
-│   ├── InvoiceDetail.jsx
-│   ├── Transform.jsx
-│   ├── Validate.jsx
-│   └── SendInvoice.jsx
-├── App.jsx                    # Router setup
-├── main.jsx
-└── index.css                  # Tailwind imports + CSS variables
-```
-
----
-
-## API Client Setup (`src/api/client.js`)
-
-```js
-import axios from 'axios';
-
-const client = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
-
-// If your API requires an API key:
-// client.defaults.headers.common['X-API-Key'] = import.meta.env.VITE_API_KEY;
-
-export default client;
-```
-
----
-
-## Environment Variables (`.env.example`)
-
-```
-VITE_API_BASE_URL=https://your-api.railway.app
-# VITE_API_KEY=your-api-key-here   # uncomment if auth is required
-```
-
----
-
-## Key UX Notes
-
-1. **The Create Invoice page is the most important** — make sure the dynamic line items work cleanly and totals update in real time.
-2. **Validate page should feel like a proper report** — not just raw JSON. Table format with coloured severity badges is important.
-3. **Transform page** needs clear feedback when formats are incompatible.
-4. **All forms** should have client-side validation that gives feedback before hitting the API.
-5. **Don't block the UI** — always show loading state while API calls are in flight.
-
----
-
-## Notes for Cursor
-
-- This is a **proof-of-concept** — full error handling for every edge case is not required, but the happy path must work end-to-end.
-- The API is a FastAPI backend deployed on Railway. Endpoints follow REST conventions.
-- Check the actual API's Swagger docs for exact request/response shapes before wiring up each page — field names may differ slightly from what's described here.
-- The API may require authentication via an API key header (see NFR8). If so, add it to the Axios client.
-- For PDF output, the API returns a binary file — handle with `responseType: 'blob'` in Axios and use `URL.createObjectURL` for download.
-- For XML/text output, the API likely returns `Content-Type: application/xml` or `text/plain` — read as text and display in a `<pre>` block.
+Login:
+
+Elements:
+
+- Public route outside the protected app workflow
+- Card-based login form with Email and Password fields
+- Toggle between Login and Create account modes
+- Sign up mode adds a Full name field
+- Primary submit button that changes between "Login" and "Sign up"
+- Loading state displaying "Please wait..."
+- Inline error message for failed authentication or signup
+- Successful authentication redirects users to the Dashboard
+
+Reasoning:
+
+The Login page supports both returning users and first-time users in a compact interface. Combining login and signup into one card reduces friction for demonstration and testing while still supporting the authenticated data model used by the rest of the app.
+
+Because the main application contains sensitive invoice and client information, the login page is the required entry point for all protected workflows. The simple card layout keeps the authentication step focused and avoids distracting users before they reach the business dashboard.
+
+Compose Invoice:
+
+Elements:
+
+- Sidebar navigation with "Compose" highlighted as active
+- Page card titled "Compose invoice" for new invoices or "Edit invoice" when opened with an invoice ID
+- Import from file bar accepting JSON, CSV, XML, and PDF files to pre-fill invoice fields
+- Client profile dropdown for loading saved buyer details
+- Template dropdown for applying saved payment terms into notes
+- Two-column seller and buyer input layout including name, email, and address fields
+- Issue Date and Due Date date picker fields
+- Currency dropdown supporting AUD, USD, GBP, and EUR, defaulting to AUD
+- Notes textarea for invoice comments or payment terms
+- Dynamic line item rows with Description, Quantity, Unit Price, Tax %, calculated Total, and Remove action
+- "Add Line" button for additional invoice rows
+- Download format dropdown for JSON, PDF, CSV, XML, and UBL XML
+- Primary action button labelled "Create invoice" or "Save changes"
+- Success or error message below the form
+- Send to client section after invoice creation with recipient email and "Send email" action
+- Live email preview card showing seller, buyer, line items, subtotal, tax total, grand total, and due date
+
+Reasoning:
+
+The Compose page is now the main invoice creation and editing workspace. It keeps the original structured invoice data entry flow, but adds current sprint features that make the form more practical for repeated business use: client profiles, reusable templates, file import, live preview, editable invoices, and immediate email sending after creation.
+
+The two-column form layout keeps seller and buyer details scannable, while the dynamic line item section supports the variable number of products or services common in SMB invoicing. The live preview gives users confidence before saving or sending, and the export format selector keeps the page connected to the broader transformation and compliance requirements of the system.
+
+Invoice Library:
+
+Elements:
+
+- Sidebar navigation with "Invoices" highlighted as active
+- Page heading "Invoices" with subtitle "Search, filter and inspect all invoice records."
+- "Import from file" button accepting JSON, CSV, XML, and PDF, then redirecting to Compose with parsed data
+- "New invoice" CTA linking to Compose
+- Search input with placeholder "Search by number, client, or email"
+- Status filter dropdown with All statuses, Draft, Sent, Viewed, Paid, Overdue, and Cancelled
+- Sort field dropdown for Newest, Due date, Amount, and Client
+- Sort order dropdown for Desc and Asc
+- Invoice list cards showing invoice number, buyer or client name, buyer or client email, total amount, and status badge
+- Per-invoice action buttons for Transform, Validate, Send, and Delete
+- Inline send row with recipient email, Send email, Cancel, and result message
+- Confirm delete state before removing an invoice
+- Loading, empty, and error states
+
+Reasoning:
+
+The Invoice Library has evolved from a simple table into a management surface for the whole invoice lifecycle. Search, status filtering, and sorting help users find records quickly as invoice volume grows, while the card layout gives each record enough space for workflow actions without requiring immediate navigation to a detail page.
+
+Placing Transform, Validate, Send, and Delete directly on each invoice supports experienced users who want to perform quick actions from the list. The confirmation step for deletion reduces risk, and the import function supports migration or reuse of invoice data from external formats.
+
+Invoice Detail:
+
+Elements:
+
+- Dynamic route for viewing a single invoice by ID
+- Invoice summary card showing invoice number, status badge, client name, email, due date, subtotal, grand total, and outstanding balance
+- Lifecycle status controls for Draft, Sent, Viewed, Paid, Overdue, and Cancelled
+- Line items section showing description, quantity, unit price, and line total
+- Payment tracking section with Amount, Method, Payment Date, and Reference fields
+- Payment method dropdown including bank_transfer, credit_card, cash, xero, and other
+- "Record payment" primary action
+- Existing payment entries shown with amount, method, reference, and date
+- Send & reminders card with recipient email input
+- "Send Invoice Email" and "Send Reminder" actions
+- Communication log showing recipient, sent time, and delivery status
+- "Edit invoice" button linking back to Compose in edit mode
+- Loading, missing invoice, action message, and error states
+
+Reasoning:
+
+The Invoice Detail page is the operational control centre for a single invoice. It brings together the record itself, lifecycle status, payment tracking, communication history, reminder sending, and edit access, which means users can manage follow-up without jumping between unrelated pages.
+
+This page is especially important for cash-flow management. SMB users often need to know whether an invoice has been sent, viewed, paid, partially paid, or overdue, and they need a simple way to record payments or send reminders. The detail view supports that real-world workflow directly.
+
+Clients:
+
+Elements:
+
+- Sidebar navigation with "Clients" highlighted as active
+- Page heading "Clients" with subtitle about reusable client profiles
+- Summary cards showing Total clients and With tax ID
+- Add client form with Name, Email, Address, Tax ID, Currency, Payment Terms, and Internal Notes
+- Currency dropdown supporting AUD, USD, GBP, and EUR, defaulting to AUD
+- Payment terms number input defaulting to 30 days
+- "Save client" primary action
+- Client library section with search by name or email
+- Client cards showing name, email, and address
+- Loading, empty, success, and error message states
+
+Reasoning:
+
+The Clients page reduces repeated data entry by letting users store common buyer information once and reuse it on the Compose page. This is particularly useful for SMB users with recurring customers, because it helps keep email addresses, payment terms, currencies, and tax identifiers consistent across invoices.
+
+The summary cards give a quick sense of client library completeness, especially whether tax IDs are present. The page is intentionally simple because its main purpose is to make invoice creation faster and less error-prone.
+
+Analytics:
+
+Elements:
+
+- Sidebar navigation with "Analytics" highlighted as active
+- Page heading "Analytics" with subtitle "Revenue trends and client performance."
+- KPI cards for Total Invoiced (all time), Paid This Month, and Overdue Amount
+- Monthly trend bar chart comparing Invoiced, Paid, and Overdue values
+- Empty state when no trend data exists
+- Top clients table with Client, Invoiced, Paid, and Outstanding columns
+- Error message if dashboard analytics data cannot be fetched
+
+Reasoning:
+
+The Analytics page gives business users a higher-level view of invoice performance. The KPI cards summarise the most important revenue figures, while the monthly trend chart makes it easier to see whether invoicing, payments, and overdue amounts are improving or worsening over time.
+
+The top clients table supports practical decision-making by identifying which customers contribute the most revenue and which have outstanding balances. This makes the frontend more useful as a business management tool, not only an invoice generation interface.
+
+Payments:
+
+Elements:
+
+- Sidebar navigation with "Payments" highlighted as active
+- Page heading "Payments" with subtitle about tracking paid amounts and outstanding balances
+- Invoice selector dropdown populated from invoice records
+- Payment summary card showing Total, Paid, and Outstanding amounts for the selected invoice
+- Payment history list showing amount, payment method, payment date, and reference
+- Empty state when no summary or payment entries exist
+- Link to open the selected invoice detail page to record a payment
+- Error state for failed invoice or payment summary fetches
+
+Reasoning:
+
+The Payments page gives users a dedicated view for reviewing payment status without opening every invoice individually. It is designed as a lightweight payment monitoring page, while the actual payment recording remains on the Invoice Detail page where the full invoice context is available.
+
+This separation keeps the workflow clear: Payments is for overview and lookup, Invoice Detail is for action. For SMB users, this makes it quicker to check outstanding balances and then jump to the exact invoice when a payment needs to be recorded.
+
+Transform:
+
+Elements:
+
+- Sidebar navigation with "Transform" highlighted as active
+- Page heading "Transform" with subtitle about converting between JSON, XML, UBL, CSV, and PDF
+- Optional invoice preloading when opened with an invoice ID from the invoice list
+- Input format dropdown supporting json, csv, xml, ubl_xml, and pdf
+- Output format dropdown supporting json, csv, xml, ubl_xml, and pdf
+- XML output type dropdown with ubl and generic options
+- File upload input for all formats, with PDF handled as a required file input when selected
+- Large Invoice data textarea for non-PDF input, populated by uploaded file text where possible
+- "Transform invoice" primary action and secondary Clear action
+- Automatic file download for PDF, CSV, XML, and UBL XML outputs
+- Inline JSON result textarea when JSON is selected as output
+- Result card for downloaded outputs, including "Validate this XML" for XML and UBL XML results
+- Error card for transformation failures
+
+Reasoning:
+
+The Transform page has been expanded from a paste-only converter into a more complete interoperability tool. Users can now transform uploaded files or pasted content, preload invoices from the library, and download non-JSON outputs automatically, which better reflects the practical ways invoice data moves between systems.
+
+The page keeps the conversion controls at the top and the invoice content area as the dominant input. Offering a direct validation link after XML output supports the end-to-end compliance flow, where users often need to convert an invoice and immediately check it against UBL, PEPPOL, or Australian rules.
+
+Validate:
+
+Elements:
+
+- Sidebar navigation with "Validate" highlighted as active
+- Page heading "Validate" with subtitle about UBL, PEPPOL, and Australian rules
+- Validation tool card with Source dropdown
+- Source options for Paste XML, Upload XML file, and Select invoice from library
+- Ruleset dropdown with ubl, peppol, and australian options
+- XML file upload input when upload mode is selected
+- Invoice library dropdown when library mode is selected
+- Large Invoice XML textarea for pasted, uploaded, or loaded XML
+- "Validate invoice" primary action and secondary Clear action
+- Validation result card showing ruleset and Valid or Invalid status
+- Validation issue cards showing rule, severity, and description
+- Empty success state reading "No errors found."
+- Error card for failed validation or unreadable XML input
+
+Reasoning:
+
+The Validate page now supports three realistic input paths: pasting XML, uploading a saved file, or selecting an invoice already stored in the library. This flexibility is useful because compliance checks can happen at different points in the workflow, either before sending, after transformation, or when reviewing stored invoices.
+
+The ruleset dropdown keeps the compliance model clear and progressive. Users can choose broad UBL checks, PEPPOL requirements, or Australian-specific validation depending on their target workflow. The result card makes validation output easy to scan by separating each issue into a readable block.
+
+Templates:
+
+Elements:
+
+- Sidebar navigation with "Templates" highlighted as active
+- Page heading "Templates" with subtitle about invoice branding templates
+- Create template form with Basic info, Branding colours, and Invoice content sections
+- Required Template name field
+- "Set as default template" checkbox
+- Primary colour picker with hex input and preview dot
+- Secondary colour picker with hex input and preview dot
+- Footer text textarea
+- Payment terms textarea
+- Bank details textarea
+- "Save template" primary action with saving state
+- Template library listing saved templates
+- Default badge for the default template
+- Colour previews for primary and secondary template colours
+- Optional footer preview text in each template card
+- Loading, empty, success, and error states
+
+Reasoning:
+
+The Templates page helps businesses standardise invoice presentation and payment language. Branding colours, footer copy, payment terms, and bank details are details that usually remain consistent across invoices, so storing them as templates reduces repetition and helps invoices look more professional.
+
+The page also improves the Compose workflow because templates can be applied while creating an invoice. This connects branding and operational invoice creation without forcing users to manually re-enter standard payment terms each time.
+
+Recurring:
+
+Elements:
+
+- Sidebar navigation with "Recurring" highlighted as active
+- Page heading "Recurring" with subtitle about auto-generating invoices on a schedule
+- Create recurring rule form with Rule name, Frequency, Next run date, and End date
+- Frequency dropdown supporting daily, weekly, biweekly, monthly, quarterly, and annually
+- Seller and buyer invoice template fields for name, email, and address
+- Due date date picker and Currency dropdown
+- Notes textarea
+- Dynamic line item rows with Description, Quantity, Unit Price, Tax %, calculated Total, and Remove action
+- "Add line item" secondary action
+- "Save recurring rule" primary action
+- Recurring rules library listing rule name, next run date, frequency, and active or paused state
+- Delete action for existing recurring rules
+- Loading, empty, success, and error message states
+
+Reasoning:
+
+The Recurring page supports invoices that need to be generated repeatedly, such as monthly retainers or regular service agreements. By capturing both schedule information and the invoice template in one form, the page lets users define the business rule and the invoice contents together.
+
+This is valuable for SMB users because recurring billing is easy to forget when handled manually. The rules library also gives visibility into which recurring invoices are active, when they will next run, and how often they repeat.
+
+Audit:
+
+Elements:
+
+- Sidebar navigation with "Audit" highlighted as active
+- Page heading "Audit" with subtitle about tracking create, update, and delete events
+- Filter audit logs card with Entity type input
+- Action input for values such as create, update, and delete
+- "Apply filters" button
+- Audit log entries card listing returned events
+- Each audit entry shows entity type, action, entity ID, changed by, and timestamp
+- Loading state while logs are fetched
+- Empty state when no audit logs are returned
+- Error message for failed audit log requests
+
+Reasoning:
+
+The Audit page adds operational transparency to the application. For a compliance-focused invoice system, users need to understand when records, templates, and recurring rules were created, updated, or deleted, especially if multiple users or automated processes can affect the same business data.
+
+Filtering by entity type and action keeps the page useful as audit volume grows. The page is intentionally record-focused, presenting each event clearly so users can investigate changes without needing to inspect backend logs directly.
